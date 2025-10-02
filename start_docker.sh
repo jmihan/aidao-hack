@@ -1,9 +1,3 @@
-#!/bin/bash
-
-# Скрипт для сборки Docker-образа и запуска интерактивной сессии внутри контейнера.
-# Рабочая директория внутри контейнера будет /code,
-# которая связана с вашей локальной папкой aidao.
-
 echo "--- Шаг 1: Установка nvidia-container-toolkit для использования gpu в docker контейнере ---"
 sudo apt-get update
 sudo apt-get install -y nvidia-container-toolkit

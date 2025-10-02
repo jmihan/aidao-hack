@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 from typing import List
 
-class OzonDataset(Dataset):
+class Dataset(Dataset):
     def __init__(self, df, tabular_cols, target_col, id_col, text_cols):
         self.df = df
         self.tabular_cols = tabular_cols
@@ -47,7 +47,7 @@ class OzonDataset(Dataset):
 
 
 def get_dataloaders(train_df, val_df, images_dir, tokenizer, tabular_cols, target_col, id_col, text_cols, batch_size, num_workers=None, sampler=None):
-    train_dataset = OzonDataset(
+    train_dataset = Dataset(
         df=train_df,
         images_dir=images_dir,
         tokenizer=tokenizer,
@@ -56,7 +56,7 @@ def get_dataloaders(train_df, val_df, images_dir, tokenizer, tabular_cols, targe
         id_col=id_col,
         text_cols=text_cols,
     )   
-    val_dataset = OzonDataset(
+    val_dataset = Dataset(
         df=val_df,
         images_dir=images_dir,
         tokenizer=tokenizer,

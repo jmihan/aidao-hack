@@ -9,13 +9,11 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.base import BaseEstimator, TransformerMixin
-from Levenshtein import distance as lev_distance
 from sklearn.model_selection import StratifiedKFold
-from preprocess_text import clean_description, clean_name_rus, clean_brand_commertial4_name
 from util import delete_rows_without_images
 from scipy.stats import entropy
 
-# --- Новая функция для оптимизации памяти ---
+
 def optimize_memory_usage(df):
     """
     Итерируется по всем колонкам DataFrame и изменяет тип данных
@@ -40,7 +38,6 @@ def optimize_memory_usage(df):
                 elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
                     df[col] = df[col].astype(np.int64)
             else:
-                # Используем float32 вместо float16 для большей стабильности вычислений
                 if c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
                     df[col] = df[col].astype(np.float32)
                 else:
@@ -52,7 +49,6 @@ def optimize_memory_usage(df):
     
     return df
 
-# --- Класс для Target Encoding ---
 class TargetEncoder(BaseEstimator, TransformerMixin):
     def __init__(self, smoothing=20.0, n_splits=5, random_state=42):
         self.smoothing = smoothing
@@ -66,20 +62,18 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
         self.global_mean_ = np.mean(y)
         self.encoded_cols_ = [f"{c}_te" for c in X.columns]
         
-        # 1. Обучаем "боевые" маппинги на ВСЕХ данных для будущего transform (на тесте)
         for col in X.columns:
             full_mapping = y.groupby(X[col]).mean()
             n = y.groupby(X[col]).count()
             self.mappings_[col] = (full_mapping * n + self.global_mean_ * self.smoothing) / (n + self.smoothing)
         
-        # 2. Создаем OOF (Out-of-Fold) признаки для ТРЕНИРОВОЧНОГО набора
+        # Создаем OOF признаки для train набора
         oof_encodings = pd.DataFrame(index=X.index)
         skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
 
         for col in X.columns:
             encoded_col = pd.Series(index=X.index, dtype=float)
             for train_idx, val_idx in skf.split(X, y):
-                # Считаем среднее только на обучающем фолде
                 fold_mapping = y.iloc[train_idx].groupby(X[col].iloc[train_idx]).mean()
                 n_fold = y.iloc[train_idx].groupby(X[col].iloc[train_idx]).count()
                 smooth_fold_mapping = (fold_mapping * n_fold + self.global_mean_ * self.smoothing) / (n_fold + self.smoothing)
@@ -91,10 +85,8 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        # Если мы на этапе fit, то возвращаем уже посчитанные OOF-признаки
         if hasattr(self, 'oof_encodings_') and X.index.equals(self.oof_encodings_.index):
             return self.oof_encodings_
-        # Если на этапе predict (тестовые данные), применяем "боевые" маппинги
         else:
             X_encoded = pd.DataFrame(index=X.index)
             for col in X.columns:
@@ -104,10 +96,8 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
     def get_feature_names_out(self, input_features=None):
         return self.encoded_cols_
 
-# --- НОВАЯ, ОБЪЕДИНЕННАЯ ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ПРИЗНАКОВ ---
 def generate_all_features(df):
     
-    # Заполняем пропуски в новых колонках нулями (на случай, если где-то деление на 0 дало NaN)
     new_feature_cols = [
         
     ]
@@ -137,12 +127,10 @@ def process_data(is_train=True):
     num_cols_to_fill = []
     df[num_cols_to_fill] = df[num_cols_to_fill].fillna(0)
 
-    # [ИЗМЕНЕНО] Вызываем новую единую функцию для генерации всех признаков
     df = generate_all_features(df)
     
     target_encode_cols = []
     
-    # Определяем числовые колонки для масштабирования. Теперь включаем все новые сгенерированные признаки.
     numeric_cols = list(df.select_dtypes(include=np.number).columns)
     cols_to_remove_from_numeric = ['id', 'resolution', 'ItemID', 'SellerID']
     numeric_cols_to_scale = [col for col in numeric_cols if col not in cols_to_remove_from_numeric]
@@ -163,7 +151,7 @@ def process_data(is_train=True):
             ('num', numeric_transformer, numeric_cols_to_scale),
             ('target', target_transformer, target_encode_cols)
         ],
-        remainder='drop' # Явно указываем, что остальные колонки нужно отбросить
+        remainder='drop'
     )
 
     if is_train:
@@ -189,7 +177,6 @@ def process_data(is_train=True):
     scaled_cols = [f"{c}_scaled" for c in numeric_cols_to_scale]
     encoded_cols = preprocessor.named_transformers_['target'].get_feature_names_out()
     
-    # [ИЗМЕНЕНО] Собираем финальный список колонок. `remainder` теперь 'drop', поэтому `passthrough_cols` не нужны.
     new_cols = scaled_cols + list(encoded_cols)
     df_processed = pd.DataFrame(X_transformed, columns=new_cols, index=df.index)
     
@@ -204,7 +191,6 @@ def process_data(is_train=True):
         output_path = './data/processed/test.csv'
          
     os.makedirs('data/processed', exist_ok=True)
-    # Сохраняем в CSV
     df_final.to_csv(output_path, index=False)
     
     print(f"Обработка завершена! Результат сохранен в {output_path}")
@@ -214,8 +200,6 @@ def process_data(is_train=True):
 
 
 if __name__ == '__main__':
-    # Устанавливаем правильную рабочую директорию, если запускаем из ozon-services/srcs/utils
-    # Это сделано для того, чтобы пути 'data/' и 'artifacts/' работали корректно
     if os.getcwd().endswith('utils'):
         os.chdir('../../')
         print(f"Рабочая директория изменена на: {os.getcwd()}")

@@ -3,7 +3,7 @@ import pandas as pd
 from itertools import product
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
-from srcs.utils import get_logger
+from src.utils import get_logger
 
 
 class TensorboardWriter():
@@ -57,7 +57,7 @@ class BatchMetrics:
 
     def reset(self):
         for col in self._data.columns:
-            self._data.loc[:, col] = 0  # Исправлено
+            self._data.loc[:, col] = 0
 
     def update(self, key, value, n=1):
         if self.postfix:
@@ -65,9 +65,9 @@ class BatchMetrics:
         if self.writer is not None:
             self.writer.add_scalar(key, value)
 
-        self._data.loc[key, "total"] += value * n  # Исправлено
-        self._data.loc[key, "counts"] += n  # Исправлено
-        self._data.loc[key, "average"] = self._data.loc[key, "total"] / self._data.loc[key, "counts"]  # Исправлено
+        self._data.loc[key, "total"] += value * n
+        self._data.loc[key, "counts"] += n
+        self._data.loc[key, "average"] = self._data.loc[key, "total"] / self._data.loc[key, "counts"]
 
     def avg(self, key):
         if self.postfix:
@@ -128,8 +128,8 @@ class EpochMetrics:
 
     def update(self, epoch, result):
         epoch_idx = f'epoch-{epoch}'
-        for k, v in result.items():  # Исправлено
-            self._data.loc[epoch_idx, tuple(k.split('/'))] = v  # Исправлено
+        for k, v in result.items():
+            self._data.loc[epoch_idx, tuple(k.split('/'))] = v
 
         self.topk_idx.append(epoch_idx)
         self.topk_idx = sorted(self.topk_idx, key=self.minimizing_metric)

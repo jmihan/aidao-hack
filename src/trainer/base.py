@@ -6,8 +6,8 @@ from pathlib import Path
 from shutil import copyfile
 from numpy import inf
 
-from srcs.utils import write_conf, is_master, get_logger
-from srcs.logger import TensorboardWriter, EpochMetrics
+from src.utils import write_conf, is_master, get_logger
+from src.logger import TensorboardWriter, EpochMetrics
 
 
 class BaseTrainer(metaclass=ABCMeta):
@@ -46,10 +46,8 @@ class BaseTrainer(metaclass=ABCMeta):
         write_conf(self.config, 'config.yaml')
 
         self.start_epoch = 1
-        if hasattr(self.model, 'transformer_encoder'):
-            self.checkpt_dir = Path(self.config.save_ftt_dir)
-        else:
-            self.checkpt_dir = Path(self.config.save_tabnet_dir)
+        
+        self.checkpt_dir = Path(self.config.save_dir)
 
         log_dir = Path(self.config.log_dir)
         if is_master():

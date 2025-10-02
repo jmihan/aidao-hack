@@ -1,11 +1,11 @@
-from srcs.utils.util import is_master
+from src.utils.util import is_master
 import torch
 import numpy as np
 import torch.distributed as dist
-from srcs.trainer.base import BaseTrainer
-from srcs.utils import inf_loop
+from src.trainer.base import BaseTrainer
+from src.utils import inf_loop
 from transformers import get_cosine_schedule_with_warmup
-from srcs.logger import BatchMetrics
+from src.logger import BatchMetrics
 import logging
 
 class Trainer(BaseTrainer):
@@ -32,95 +32,28 @@ class Trainer(BaseTrainer):
     def _train_epoch(self, epoch):
         self.model.train()
         self.train_metrics.reset()
-        self.mixup_alpha = 0.4
-        if hasattr(self.model, 'transformer_encoder'):
-            transformer_params = self.model.transformer_encoder.parameters()
-            optimizer_transformer = torch.optim.AdamW(transformer_params, lr=5e-5, weight_decay=1e-2)
 
-            num_training_steps = len(self.data_loader) * self.epochs
-            num_warmup_steps = int(num_training_steps * 0.1)
-            
-            scheduler_transformer = get_cosine_schedule_with_warmup(
-                optimizer_transformer,
-                num_warmup_steps=num_warmup_steps,
-                num_training_steps=num_training_steps
-            )
+        # num_training_steps = len(self.data_loader) * self.epochs
+        # num_warmup_steps = int(num_training_steps * 0.1)
+        
+        # scheduler_transformer = get_cosine_schedule_with_warmup(
+        #     self.optimizer,
+        #     num_warmup_steps=num_warmup_steps,
+        #     num_training_steps=num_training_steps
+        # )
 
-        for batch_idx, (batch_data, target) in enumerate(self.data_loader):
-            if hasattr(self.model, 'transformer_encoder'):
-                batch_data.pop('tabular')
-            else:
-                batch_data.pop('x_numerical')
-                batch_data.pop('x_categorical')                
+        for batch_idx, (batch_data, target) in enumerate(self.data_loader):               
             batch_data = {k: v.to(self.device) for k, v in batch_data.items()}
             target = target.to(self.device).squeeze(1).float() 
 
-            if hasattr(self.model, 'transformer_encoder'):
-                lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-                batch_size = target.size(0)
-                index = torch.randperm(batch_size).to(self.device)
 
-                mixed_image = lam * batch_data['image'] + (1 - lam) * batch_data['image'][index, :]
-                mixed_input_ids = batch_data['input_ids']
-                mixed_attention_mask = batch_data['attention_mask']
-                mixed_tabular = lam * batch_data['x_numerical'] + (1 - lam) * batch_data['x_numerical'][index, :]
+            self.optimizer.zero_grad()
+            logits = self.model(**batch_data)
+            loss = self.criterion(logits, target)
+            loss.backward()
+            self.optimizer.step()
+            # scheduler.step()
 
-                mixed_data = {
-                    'image': mixed_image,
-                    'input_ids': mixed_input_ids,
-                    'attention_mask': mixed_attention_mask,
-                    'x_numerical': mixed_tabular,
-                    'x_categorical': batch_data['x_categorical']
-                }
-
-                mixed_target = lam * target + (1 - lam) * target[index]
-                self.optimizer.zero_grad()
-                optimizer_transformer.zero_grad()
-                logits = self.model(**mixed_data)
-                loss = self.criterion(logits, mixed_target)
-                loss.backward()
-                self.optimizer.step()
-                optimizer_transformer.step()
-                scheduler_transformer.step()
-
-            else:
-                #
-                lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-                batch_size = target.size(0)
-                index = torch.randperm(batch_size).to(self.device)
-
-                mixed_image = lam * batch_data['image'] + (1 - lam) * batch_data['image'][index, :]
-                mixed_input_ids = batch_data['input_ids']
-                mixed_attention_mask = batch_data['attention_mask']
-                mixed_tabular = lam * batch_data['tabular'] + (1 - lam) * batch_data['tabular'][index, :]
-
-                mixed_data = {
-                    'image': mixed_image,
-                    'input_ids': mixed_input_ids,
-                    'attention_mask': mixed_attention_mask,
-                    'tabular': mixed_tabular,
-                }
-
-                mixed_target = lam * target + (1 - lam) * target[index]
-
-                n_features_to_cut = 8
-                aug_mask = torch.rand(mixed_tabular.size(0)) < 0.2
-    
-                aug_indices = torch.where(aug_mask)[0]
-                
-                if aug_indices.numel() > 0:
-                    for i in aug_indices:
-                        features_to_cut = np.random.choice(mixed_tabular.size(1), n_features_to_cut, replace=False)
-                        mixed_tabular[i, features_to_cut] = 0.0
-                        
-                self.optimizer.zero_grad()
-                output_logits, tab_m_loss = self.model(**mixed_data)
-
-                lambda_sparse = 1e-3 
-                loss = self.criterion(output_logits, mixed_target) + lambda_sparse * tab_m_loss.mean()
-
-                loss.backward()
-                self.optimizer.step()
             self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
             self.train_metrics.update('loss', loss.item())
 
@@ -128,10 +61,8 @@ class Trainer(BaseTrainer):
                 self.logger.info(f'Train Epoch: {epoch} {self._progress(batch_idx)} Loss: {loss.item():.6f}')
                 
                 with torch.no_grad():
-                    if hasattr(self.model, 'transformer_encoder'):
-                        metric_output = torch.round(torch.sigmoid(logits))
-                    else:
-                        metric_output = torch.round(torch.sigmoid(output_logits))
+                    metric_output = torch.round(torch.sigmoid(logits))
+
                     for met in self.metric_ftns:
                         self.train_metrics.update(met.__name__, met(metric_output.cpu(), target.cpu()))
 
@@ -166,20 +97,10 @@ class Trainer(BaseTrainer):
             self.valid_metrics.reset()
             with torch.no_grad():
                 for batch_idx, (batch_data, target) in enumerate(self.valid_data_loader):
-                    if hasattr(self.model, 'transformer_encoder'):
-                        batch_data.pop('tabular')
-                    else:
-                        batch_data.pop('x_numerical')
-                        batch_data.pop('x_categorical') 
                     batch_data = {k: v.to(self.device) for k, v in batch_data.items()}
                     target = target.to(self.device).squeeze(1).float() 
                     output_logits = self.model(**batch_data)
-                    if isinstance(output_logits, tuple):
-                        output_logits, m_loss = output_logits
-                        lambda_loss_m = 1e-3
-                        loss = self.criterion(output_logits, target) + lambda_loss_m * m_loss
-                    else:
-                        loss = self.criterion(output_logits, target)
+                    loss = self.criterion(output_logits, target)
 
                     self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx)
                     self.valid_metrics.update('loss', loss.item())
