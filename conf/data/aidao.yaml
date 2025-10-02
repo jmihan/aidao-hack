@@ -1,0 +1,17 @@
+# @package _global_
+data:
+  csv_path: "./data/processed/train.csv"
+  id_col: ""
+  target_col: ""
+  val_size: 0.1
+  text_cols: ${features.text_cols}
+  tabular_cols: ${features.tabular_cols}
+
+data_loader:
+  _target_: src.data_loader.data_loaders.get_dataloaders
+  tabular_cols: ${data.tabular_cols}
+  target_col: ${data.target_col}
+  id_col: ${data.id_col}
+  text_cols: ${data.text_cols}
+  batch_size: ${batch_size}
+  num_workers: ${n_cpu}

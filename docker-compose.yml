@@ -1,0 +1,21 @@
+services:
+  aidao:
+    build: .
+    container_name: aidao-container
+    shm_size: '10g'
+    volumes:
+      - ./:/code
+    working_dir: /code
+    environment:
+      - PYTHONUNBUFFERED=1
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    init: true

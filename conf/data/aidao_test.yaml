@@ -1,0 +1,23 @@
+# @package _global_
+data_test:
+  csv_path: "./data/processed/test.csv"
+  id_col: "ItemID"
+  target_col: "resolution"
+  text_cols:
+    - "description"
+    - "name_rus"
+
+
+  tabular_cols:
+    # Исходные числовые признаки (уже отмасштабированные)
+    
+
+data_loader:
+  _target_: srcs.data_loader.data_loaders.get_test_dataloader
+  tokenizer: ${tokenizer}
+  tabular_cols: ${data.tabular_cols}
+  target_col: ${data.target_col}
+  id_col: ${data.id_col}
+  text_cols: ${data.text_cols}
+  batch_size: ${batch_size}
+  num_workers: ${n_cpu}
