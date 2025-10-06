@@ -3,18 +3,20 @@
 import pandas as pd
 import numpy as np
 import torch
+import os
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
-from ..utils.timefeatures import time_features
-from ..utils import get_logger
+from utils.timefeatures import time_features
+from utils import get_logger
 
 log = get_logger(__name__)
 
 def get_data_loaders(config, batch_size):
-    # --- 1. Загрузка и базовая предобработка данных ---
+    # --- 1. Загрузка и полная предобработка данных ---
     log.info(f"Загрузка данных из {config.data_path}...")
     try:
-        df_raw = pd.read_csv(config.data_path, header=None)
+        csv_path = os.path.join(config.root_path, config.data_path)
+        df_raw = pd.read_csv(csv_path, header=None)
         df_raw.columns = [
             "block_id", "frame_idx", "E_mu_Z", "E_mu_phys_est", "E_mu_X", "E_nu1_X", "E_nu2_X", "E_nu1_Z", "E_nu2_Z",
             "N_mu_X", "M_mu_XX", "M_mu_XZ", "M_mu_X", "N_mu_Z", "M_mu_ZZ", "M_mu_Z", "N_nu1_X", "M_nu1_XX",
@@ -24,83 +26,87 @@ def get_data_loaders(config, batch_size):
             "temp_1", "biasVoltage_1", "temp_2", "biasVoltage_2", "synErr", "N_EC_rounds",
             "maintenance_flag", "estimator_name", "f_EC", "E_mu_Z_est", "R", "s", "p",
         ]
-        df_raw = df_raw.rename(columns={"block_id": "id", "E_mu_Z": "value", "frame_idx": "date"})
-        df_raw = df_raw[["id", "date", "value"]].dropna(subset=["value"])
-        log.info("Данные успешно загружены и предобработаны.")
-
+        df_raw = df_raw.rename(columns={"block_id": "id", "frame_idx": "date"})
+        log.info("Данные успешно загружены.")
     except FileNotFoundError:
         log.error(f"Ошибка: Файл данных не найден по пути {config.data_path}")
-        return None, None, None
+        return None, None, None, None, -1
 
-    # --- 2. Разделение данных на обучающую и валидационную выборки ---
-    unique_dates = sorted(df_raw['date'].unique())
+    # --- 2. Выбор признаков для модели ---
+    feature_cols = [col for col in df_raw.columns if col not in config.cols_to_drop_from_features and df_raw[col].dtype in [np.int64, np.float64]]
+    
+    if config.target_column in feature_cols:
+        feature_cols.insert(0, feature_cols.pop(feature_cols.index(config.target_column)))
+    else:
+        log.error(f"Целевая колонка {config.target_column} не найдена среди числовых признаков!")
+        return None, None, None, None, -1
+        
+    target_channel_idx = feature_cols.index(config.target_column)
+    
+    log.info(f"Выбрано {len(feature_cols)} признаков для модели. Целевая колонка: '{config.target_column}' (индекс {target_channel_idx}).")
+    log.debug(f"Список признаков: {feature_cols}")
+
+    df_processed = df_raw[['id', 'date'] + feature_cols].copy()
+    df_processed.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df_processed = df_processed.ffill()
+    df_processed.dropna(inplace=True)
+
+    # --- 3. Разделение данных ---
+    unique_dates = sorted(df_processed['date'].unique())
     split_idx = int(len(unique_dates) * 0.8)
     split_date = unique_dates[split_idx]
-
-    train_df = df_raw[df_raw['date'] < split_date]
-    valid_df = df_raw[df_raw['date'] >= split_date]
-    
-    # Заменяем print на log.info для информационных сообщений
+    train_df = df_processed[df_processed['date'] < split_date].copy()
+    valid_df = df_processed[df_processed['date'] >= split_date].copy()
     log.info(f"Данные разделены. Train: {len(train_df)} строк, Valid: {len(valid_df)} строк.")
 
-    # --- 3. Масштабирование данных ---
-    log.info("Масштабирование данных с помощью StandardScaler...")
+    # --- 4. Масштабирование ---
+    log.info("Масштабирование всех признаков с помощью StandardScaler...")
     scaler = StandardScaler()
-    train_df['value'] = scaler.fit_transform(train_df[['value']])
-    valid_df['value'] = scaler.transform(valid_df[['value']])
-    log.info("Масштабирование завершено. Скейлер обучен на train данных.")
+    train_df.loc[:, feature_cols] = scaler.fit_transform(train_df[feature_cols])
+    valid_df.loc[:, feature_cols] = scaler.transform(valid_df[feature_cols])
+    log.info("Масштабирование завершено.")
 
-    # --- 4. Создание датасетов и загрузчиков ---
-    train_dataset = Dataset_Custom(train_df, size=[config.context_length, config.label_len, config.prediction_length])
-    valid_dataset = Dataset_Custom(valid_df, size=[config.context_length, config.label_len, config.prediction_length])
+    # --- 5. Создание датасетов и загрузчиков ---
+    train_dataset = Dataset_Custom(train_df, features_list=feature_cols, size=[config.context_length, config.label_len, config.prediction_length], features='M')
+    valid_dataset = Dataset_Custom(valid_df, features_list=feature_cols, size=[config.context_length, config.label_len, config.prediction_length], features='M')
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 2))
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 2))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 20))
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20))
     log.info("Загрузчики данных (DataLoader) успешно созданы.")
 
-    return train_loader, valid_loader, scaler
-
+    return train_loader, valid_loader, scaler, feature_cols, target_channel_idx
 
 class Dataset_Custom(Dataset):
-    def __init__(self, df, size=None, features='S', target='value', scale=False, timeenc=1, freq='h'):
+    def __init__(self, df, features_list, size=None, features='S', timeenc=1, freq='h'):
         if size is None:
-            self.seq_len = 96
-            self.label_len = 48
-            self.pred_len = 24
+            self.seq_len, self.label_len, self.pred_len = 96, 48, 24
         else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
+            self.seq_len, self.label_len, self.pred_len = size
         
         self.features = features
-        self.target = target
-        self.scale = scale
+        self.features_list = features_list
         self.timeenc = timeenc
         self.freq = freq
 
         self.__read_data__(df)
 
     def __read_data__(self, df_raw):
-        df_stamp = df_raw[['date']]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        df_stamp = df_raw[['date']].copy()
+        df_stamp['date'] = pd.to_datetime(df_stamp['date'])
         
         if self.timeenc == 1:
-            data_stamp = time_features(df_stamp['date'].values, freq=self.freq)
+            datetime_index = pd.DatetimeIndex(df_stamp['date'])
+            data_stamp = time_features(datetime_index, freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
         else:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            data_stamp = df_stamp.drop(['date'], 1).values
-            
-        if self.features == 'S':
-            df_data = df_raw[[self.target]]
-        else:
-            df_data = df_raw.drop(columns=['id', 'date'])
+            df_stamp['month'] = df_stamp.date.dt.month
+            df_stamp['day'] = df_stamp.date.dt.day
+            df_stamp['weekday'] = df_stamp.date.dt.weekday
+            df_stamp['hour'] = df_stamp.date.dt.hour
+            data_stamp = df_stamp.drop(['date'], axis=1).values
         
-        self.data_x = df_data.values
-        self.data_y = df_data.values
+        self.data_x = df_raw[self.features_list].values
+        self.data_y = self.data_x
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
@@ -109,7 +115,7 @@ class Dataset_Custom(Dataset):
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
 
-        if s_end + self.pred_len > len(self.data_x):
+        if r_end > len(self.data_x):
             return self.__getitem__(0)
             
         seq_x = self.data_x[s_begin:s_end]

@@ -1,0 +1,71 @@
+n_gpu: 6
+output_dir: outputs/patchtst_custom/2025-10-07_02-12-37
+data:
+  name: aidao_time_series
+  root_path: ./data/
+  data_path: frames_errors.csv
+  context_length: 160
+  prediction_length: 8
+  label_len: 48
+  features: M
+  target_column: E_mu_Z
+  cols_to_drop_from_features:
+  - id
+  - date
+  - E_mu_phys_est
+  - synErr
+  - N_EC_rounds
+  - maintenance_flag
+  - estimator_name
+  - f_EC
+  - E_mu_Z_est
+  - R
+  - s
+  - p
+model:
+  name: PatchTST_Custom
+  arch:
+    _target_: src.model.patchtst.model.Model
+    configs:
+      enc_in: 38
+      seq_len: 160
+      pred_len: 8
+      patch_len: 16
+      stride: 8
+      e_layers: 3
+      n_heads: 4
+      d_model: 16
+      d_ff: 128
+      dropout: 0.1
+      fc_dropout: 0.1
+      head_dropout: 0.0
+      individual: false
+      revin: true
+      affine: true
+      subtract_last: false
+      decomposition: false
+      kernel_size: 25
+      padding_patch: null
+  target_channel_idx: 0
+  loss:
+    _target_: torch.nn.MSELoss
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 0.001
+    weight_decay: 0.001
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+    mode: min
+    factor: 0.2
+    patience: 3
+hparams:
+  epochs: 50
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.001
+  trainer:
+    logging_step: 100
+    monitor: min loss/valid
+    save_topk: 3
+    early_stop: 10
+    tensorboard: true

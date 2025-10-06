@@ -5,5 +5,5 @@ defaults:
   - hparams: training_params
   - override hydra/job_logging: custom
 
-epochs: 50
+n_gpu: 6
 output_dir: "outputs/patchtst_custom/${now:%Y-%m-%d_%H-%M-%S}"

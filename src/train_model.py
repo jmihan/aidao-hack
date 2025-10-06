@@ -1,18 +1,21 @@
 # train_model.py
 
+import os
+import pickle
 import torch
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 from argparse import Namespace
 
-from src.data_loader.data_loaders import get_data_loaders
-from src.trainer.trainer import Trainer
-from src.model.patchtst.model import Model
+from data_loader.data_loaders import get_data_loaders
+from trainer.trainer import Trainer
+from model.patchtst.model import Model
+from model.metric import mae, mse
 
 log = logging.getLogger(__name__)
 
-@hydra.main(config_path="conf", config_name="train", version_base=None)
+@hydra.main(config_path="../conf", config_name="train", version_base=None)
 def train(cfg: DictConfig) -> None:
     log.info("="*50)
     log.info("Запуск пайплайна обучения...")
@@ -21,7 +24,7 @@ def train(cfg: DictConfig) -> None:
 
     # --- 1. Загрузка данных ---
     log.info("--- Шаг 1/5: Загрузка и подготовка данных ---")
-    train_loader, valid_loader, scaler = get_data_loaders(
+    train_loader, valid_loader, scaler, feature_cols, target_channel_idx = get_data_loaders(
         config=cfg.data, 
         batch_size=cfg.hparams.batch_size
     )
@@ -29,25 +32,29 @@ def train(cfg: DictConfig) -> None:
         log.error("Не удалось создать загрузчики данных. Прерывание.")
         return
         
-    # --- 2. Инициализация модели ---
-    log.info("--- Шаг 2/5: Инициализация модели PatchTST ---")
-    # Модель ожидает объект с атрибутами, а не словарь.
-    # Преобразуем конфиг модели в такой объект.
-    model_configs = Namespace(**cfg.model.arch.configs)
-    model = Model(configs=model_configs)
-    log.info(f"Модель создана:\n{model}")
+    # --- 2. Динамическое обновление конфига ---
+    n_features = len(feature_cols)
+    log.info(f"Динамическое обновление конфига: n_features = {n_features}, target_channel_idx = {target_channel_idx}")
+    OmegaConf.set_struct(cfg, False)
+    cfg.model.arch.configs.enc_in = n_features
+    cfg.model.target_channel_idx = target_channel_idx
+    OmegaConf.set_struct(cfg, True)
 
-    # --- 3. Инициализация функции потерь, оптимизатора и планировщика ---
+    # --- 3. Инициализация модели ---
+    log.info("--- Шаг 2/5: Инициализация модели PatchTST ---")
+    model_configs = Namespace(**cfg.model.arch.configs)
+    log.info(f"{model_configs}")
+    model = Model(configs=model_configs)
+    log.info(f"Модель создана с {n_features} входными каналами.")
+
+    # --- 4. Инициализация компонентов обучения ---
     log.info("--- Шаг 3/5: Инициализация компонентов обучения ---")
     criterion = hydra.utils.instantiate(cfg.model.loss)
     optimizer = hydra.utils.instantiate(cfg.model.optimizer, params=model.parameters())
     lr_scheduler = hydra.utils.instantiate(cfg.model.lr_scheduler, optimizer=optimizer)
 
-    # --- 4. Инициализация тренера ---
+    # --- 5. Инициализация тренера ---
     log.info("--- Шаг 4/5: Инициализация кастомного тренера ---")
-    
-    # Метрики для регрессии
-    from src.model.metric import mae, mse
     metric_ftns = [mae, mse]
     
     trainer = Trainer(
@@ -62,13 +69,32 @@ def train(cfg: DictConfig) -> None:
         lr_scheduler=lr_scheduler
     )
 
-    # --- 5. Запуск обучения ---
+    # --- 6. Запуск обучения ---
     log.info("--- Шаг 5/5: Запуск процесса обучения ---")
     trainer.train()
     log.info("="*50)
     log.info("Обучение успешно завершено!")
     log.info("="*50)
 
+    # --- 7. Сохранение артефактов для предсказания ---
+    if cfg.hparams.trainer.save_topk > 0:
+        log.info("--- Шаг 6/6: Сохранение артефактов для инференса ---")
+
+        artifacts = {
+            'scaler': scaler,
+            'feature_cols': feature_cols,
+            'target_channel_idx': target_channel_idx,
+            'config': cfg 
+        }
+        
+        artifact_path = "artifacts.pkl"
+        with open(artifact_path, "wb") as f:
+            pickle.dump(artifacts, f)
+        log.info(f"Артефакты (скейлер, конфиг) сохранены в: {os.getcwd()}/{artifact_path}")
+
+    log.info("="*50)
+    log.info("Пайплайн обучения успешно завершен!")
+    log.info("="*50)
 
 if __name__ == '__main__':
     train()

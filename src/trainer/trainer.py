@@ -1,11 +1,9 @@
 # src/trainer/trainer.py
 
 import torch
-import numpy as np
-from ..trainer.base import BaseTrainer
-from ..logger import BatchMetrics
-from ..model.metric import mae, mse
-
+from trainer.base import BaseTrainer
+from logger import BatchMetrics
+from model.metric import mae, mse
 
 class Trainer(BaseTrainer):
     def __init__(self, model, epochs, criterion, metric_ftns, optimizer, config, data_loader,
@@ -23,6 +21,8 @@ class Trainer(BaseTrainer):
         self.train_metrics = BatchMetrics('loss', *metric_names, postfix='/train', writer=self.writer)
         self.valid_metrics = BatchMetrics('loss', *metric_names, postfix='/valid', writer=self.writer)
 
+        self.target_idx = self.config.model.target_channel_idx
+
     def _train_epoch(self, epoch):
         self.model.train()
         self.train_metrics.reset()
@@ -35,9 +35,11 @@ class Trainer(BaseTrainer):
             
             output = self.model(seq_x)
             
-            target = seq_y[:, -self.config.model.arch.configs.pred_len:, :]
+            output_for_loss = output[:, :, self.target_idx]
             
-            loss = self.criterion(output, target)
+            target_for_loss = seq_y[:, -self.config.model.arch.configs.pred_len:, self.target_idx]
+            
+            loss = self.criterion(output_for_loss, target_for_loss)
             loss.backward()
             self.optimizer.step()
 
@@ -49,7 +51,7 @@ class Trainer(BaseTrainer):
         
         with torch.no_grad():
             for met in self.metric_ftns:
-                self.train_metrics.update(met.__name__, met(output, target))
+                self.train_metrics.update(met.__name__, met(output_for_loss, target_for_loss))
         
         log = self.train_metrics.result()
 
@@ -82,11 +84,14 @@ class Trainer(BaseTrainer):
                     output = self.model(seq_x)
                     target = seq_y[:, -self.config.model.arch.configs.pred_len:, :]
                     
-                    loss = self.criterion(output, target)
+                    output_for_loss = output[:, :, self.target_idx]
+                    target_for_loss = target[:, :, self.target_idx]
+
+                    loss = self.criterion(output_for_loss, target_for_loss)
                     total_loss += loss.item()
 
-                    all_outputs.append(output.cpu())
-                    all_targets.append(target.cpu())
+                    all_outputs.append(output_for_loss.cpu())
+                    all_targets.append(target_for_loss.cpu())
 
             all_outputs = torch.cat(all_outputs)
             all_targets = torch.cat(all_targets)
@@ -100,9 +105,3 @@ class Trainer(BaseTrainer):
         except Exception as e:
             self.logger.error(f"Ошибка во время валидации: {e}", exc_info=True)
             return self.valid_metrics.result()
-
-    def _progress(self, batch_idx):
-        base = '[{}/{} ({:.0f}%)]'
-        total = self.len_epoch
-        current = batch_idx
-        return base.format(current, total, 100.0 * current / total)

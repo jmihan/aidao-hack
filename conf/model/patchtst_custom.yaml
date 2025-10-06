@@ -2,25 +2,45 @@ name: PatchTST_Custom
 arch:
   _target_: src.model.patchtst.model.Model
   configs:
+    # --- Параметры данных ---
     enc_in: 1
     seq_len: ${data.context_length}
     pred_len: ${data.prediction_length}
+    
+    # --- Параметры патчей ---
     patch_len: 16
     stride: 8
-    e_layers: 3
+
+    # --- Параметры архитектуры трансформера ---
+    e_layers: 3 
     n_heads: 4
     d_model: 16
     d_ff: 128
     dropout: 0.1
+    fc_dropout: 0.1
+    head_dropout: 0.0
+
+    # --- Дополнительные параметры модели ---
+    individual: false
     revin: true
+    affine: true
+    subtract_last: false
+
+    # --- Параметры декомпозиции (если используется) ---
     decomposition: false
+    kernel_size: 25
+
+    padding_patch: null
+
+target_channel_idx: 0
 
 loss:
   _target_: torch.nn.MSELoss
 
 optimizer:
   _target_: torch.optim.AdamW
-  lr: ${learning_rate}
+  lr: ${hparams.learning_rate}
+  weight_decay: ${hparams.weight_decay}
 
 lr_scheduler:
   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
