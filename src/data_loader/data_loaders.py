@@ -1,92 +1,106 @@
+# src/data_loader/data_loaders.py
+
+import pandas as pd
 import numpy as np
 import torch
-import pandas as pd
-import os
-from torch.utils.data import DataLoader, Dataset
-from pathlib import Path
-from typing import List
+from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
-from utils.timefeatures import time_features
+from ..utils.timefeatures import time_features
+from ..utils import get_logger
+
+log = get_logger(__name__)
+
+def get_data_loaders(config, batch_size):
+    # --- 1. Загрузка и базовая предобработка данных ---
+    log.info(f"Загрузка данных из {config.data_path}...")
+    try:
+        df_raw = pd.read_csv(config.data_path, header=None)
+        df_raw.columns = [
+            "block_id", "frame_idx", "E_mu_Z", "E_mu_phys_est", "E_mu_X", "E_nu1_X", "E_nu2_X", "E_nu1_Z", "E_nu2_Z",
+            "N_mu_X", "M_mu_XX", "M_mu_XZ", "M_mu_X", "N_mu_Z", "M_mu_ZZ", "M_mu_Z", "N_nu1_X", "M_nu1_XX",
+            "M_nu1_XZ", "M_nu1_X", "N_nu1_Z", "M_nu1_ZZ", "M_nu1_Z", "N_nu2_X", "M_nu2_XX", "M_nu2_XZ",
+            "M_nu2_X", "N_nu2_Z", "M_nu2_ZZ", "M_nu2_Z", "nTot", "bayesImVoltage", "opticalPower",
+            "polarizerVoltages[0]", "polarizerVoltages[1]", "polarizerVoltages[2]", "polarizerVoltages[3]",
+            "temp_1", "biasVoltage_1", "temp_2", "biasVoltage_2", "synErr", "N_EC_rounds",
+            "maintenance_flag", "estimator_name", "f_EC", "E_mu_Z_est", "R", "s", "p",
+        ]
+        df_raw = df_raw.rename(columns={"block_id": "id", "E_mu_Z": "value", "frame_idx": "date"})
+        df_raw = df_raw[["id", "date", "value"]].dropna(subset=["value"])
+        log.info("Данные успешно загружены и предобработаны.")
+
+    except FileNotFoundError:
+        log.error(f"Ошибка: Файл данных не найден по пути {config.data_path}")
+        return None, None, None
+
+    # --- 2. Разделение данных на обучающую и валидационную выборки ---
+    unique_dates = sorted(df_raw['date'].unique())
+    split_idx = int(len(unique_dates) * 0.8)
+    split_date = unique_dates[split_idx]
+
+    train_df = df_raw[df_raw['date'] < split_date]
+    valid_df = df_raw[df_raw['date'] >= split_date]
+    
+    # Заменяем print на log.info для информационных сообщений
+    log.info(f"Данные разделены. Train: {len(train_df)} строк, Valid: {len(valid_df)} строк.")
+
+    # --- 3. Масштабирование данных ---
+    log.info("Масштабирование данных с помощью StandardScaler...")
+    scaler = StandardScaler()
+    train_df['value'] = scaler.fit_transform(train_df[['value']])
+    valid_df['value'] = scaler.transform(valid_df[['value']])
+    log.info("Масштабирование завершено. Скейлер обучен на train данных.")
+
+    # --- 4. Создание датасетов и загрузчиков ---
+    train_dataset = Dataset_Custom(train_df, size=[config.context_length, config.label_len, config.prediction_length])
+    valid_dataset = Dataset_Custom(valid_df, size=[config.context_length, config.label_len, config.prediction_length])
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 2))
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 2))
+    log.info("Загрузчики данных (DataLoader) успешно созданы.")
+
+    return train_loader, valid_loader, scaler
+
 
 class Dataset_Custom(Dataset):
-    def __init__(self, root_path, flag='train', size=None,
-                 features='S', data_path='ETTh1.csv',
-                 target='OT', scale=True, timeenc=0, freq='h'):
-        # size [seq_len, label_len, pred_len]
-        # info
-        if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
+    def __init__(self, df, size=None, features='S', target='value', scale=False, timeenc=1, freq='h'):
+        if size is None:
+            self.seq_len = 96
+            self.label_len = 48
+            self.pred_len = 24
         else:
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
-        # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
-        self.set_type = type_map[flag]
-
+        
         self.features = features
         self.target = target
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
 
-        self.root_path = root_path
-        self.data_path = data_path
-        self.__read_data__()
+        self.__read_data__(df)
 
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
-
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        cols = list(df_raw.columns)
-        cols.remove(self.target)
-        cols.remove('date')
-        df_raw = df_raw[['date'] + cols + [self.target]]
-        # print(cols)
-        num_train = int(len(df_raw) * 0.7)
-        num_test = int(len(df_raw) * 0.2)
-        num_vali = len(df_raw) - num_train - num_test
-        border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
-        border2s = [num_train, num_train + num_vali, len(df_raw)]
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
-            self.scaler.fit(train_data.values)
-            # print(self.scaler.mean_)
-            # exit()
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        df_stamp = df_raw[['date']][border1:border2]
+    def __read_data__(self, df_raw):
+        df_stamp = df_raw[['date']]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        if self.timeenc == 0:
+        
+        if self.timeenc == 1:
+            data_stamp = time_features(df_stamp['date'].values, freq=self.freq)
+            data_stamp = data_stamp.transpose(1, 0)
+        else:
             df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
             df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
             df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
             df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
             data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
+            
+        if self.features == 'S':
+            df_data = df_raw[[self.target]]
+        else:
+            df_data = df_raw.drop(columns=['id', 'date'])
+        
+        self.data_x = df_data.values
+        self.data_y = df_data.values
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
@@ -95,121 +109,16 @@ class Dataset_Custom(Dataset):
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
 
+        if s_end + self.pred_len > len(self.data_x):
+            return self.__getitem__(0)
+            
         seq_x = self.data_x[s_begin:s_end]
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        
+        return (torch.FloatTensor(seq_x), torch.FloatTensor(seq_y),
+                torch.FloatTensor(seq_x_mark), torch.FloatTensor(seq_y_mark))
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-    
-
-class Dataset_Pred(Dataset):
-    def __init__(self, root_path, flag='pred', size=None,
-                 features='S', data_path='ETTh1.csv',
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='15min', cols=None):
-        # size [seq_len, label_len, pred_len]
-        # info
-        if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
-        else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
-        # init
-        assert flag in ['pred']
-
-        self.features = features
-        self.target = target
-        self.scale = scale
-        self.inverse = inverse
-        self.timeenc = timeenc
-        self.freq = freq
-        self.cols = cols
-        self.root_path = root_path
-        self.data_path = data_path
-        self.__read_data__()
-
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        if self.cols:
-            cols = self.cols.copy()
-            cols.remove(self.target)
-        else:
-            cols = list(df_raw.columns)
-            cols.remove(self.target)
-            cols.remove('date')
-        df_raw = df_raw[['date'] + cols + [self.target]]
-        border1 = len(df_raw) - self.seq_len
-        border2 = len(df_raw)
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            self.scaler.fit(df_data.values)
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        tmp_stamp = df_raw[['date']][border1:border2]
-        tmp_stamp['date'] = pd.to_datetime(tmp_stamp.date)
-        pred_dates = pd.date_range(tmp_stamp.date.values[-1], periods=self.pred_len + 1, freq=self.freq)
-
-        df_stamp = pd.DataFrame(columns=['date'])
-        df_stamp.date = list(tmp_stamp.date.values) + list(pred_dates[1:])
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
-            df_stamp['minute'] = df_stamp.minute.map(lambda x: x // 15)
-            data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        if self.inverse:
-            self.data_y = df_data.values[border1:border2]
-        else:
-            self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
-
-    def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = r_begin + self.label_len + self.pred_len
-
-        seq_x = self.data_x[s_begin:s_end]
-        if self.inverse:
-            seq_y = self.data_x[r_begin:r_begin + self.label_len]
-        else:
-            seq_y = self.data_y[r_begin:r_begin + self.label_len]
-        seq_x_mark = self.data_stamp[s_begin:s_end]
-        seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.data_x) - self.seq_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)

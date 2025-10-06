@@ -46,12 +46,9 @@ class BaseTrainer(metaclass=ABCMeta):
         write_conf(self.config, 'config.yaml')
 
         self.start_epoch = 1
-        if hasattr(self.model, 'transformer_encoder'):
-            self.checkpt_dir = Path(self.config.save_ftt_dir)
-        else:
-            self.checkpt_dir = Path(self.config.save_tabnet_dir)
-
-        log_dir = Path(self.config.log_dir)
+        self.checkpt_dir = Path(os.getcwd()) / 'checkpoints'
+        
+        log_dir = Path(os.getcwd()) / 'tensorboard'
         if is_master():
             
             if not self.checkpt_dir.exists():

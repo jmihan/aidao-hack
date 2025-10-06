@@ -17,10 +17,7 @@ import pandas as pd
 def is_master():
     return not dist.is_initialized() or dist.get_rank() == 0
 
-def get_logger(name=None,state='train'):
-    if is_master():
-        hydra_conf = OmegaConf.load(f'run/{state}/.hydra/hydra.yaml')
-        logging.config.dictConfig(OmegaConf.to_container(hydra_conf.hydra.job_logging, resolve=True))
+def get_logger(name=None):
     return logging.getLogger(name)
 
 
