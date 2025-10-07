@@ -78,14 +78,16 @@ def predict(model_dir: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_configs = Namespace(**cfg.model.arch.configs)
     model = Model(configs=model_configs)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint['state_dict'])
     model.to(device)
     model.eval()
     log.info(f"Модель успешно загружена на {device}.")
 
     # --- 3. Подготовка тестовых данных ---
     log.info("--- Шаг 2/6: Подготовка тестовых данных ---")
-    df_raw = pd.read_csv(cfg.data.data_path, header=None)
+    csv_path = os.path.join(cfg.data.root_path, cfg.data.data_path)
+    df_raw = pd.read_csv(csv_path, header=None)
     df_raw.columns = [
         "block_id", "frame_idx", "E_mu_Z", "E_mu_phys_est", "E_mu_X", "E_nu1_X", "E_nu2_X", "E_nu1_Z", "E_nu2_Z", "N_mu_X", "M_mu_XX", "M_mu_XZ", "M_mu_X", "N_mu_Z", "M_mu_ZZ", "M_mu_Z", "N_nu1_X", "M_nu1_XX", "M_nu1_XZ", "M_nu1_X", "N_nu1_Z", "M_nu1_ZZ", "M_nu1_Z", "N_nu2_X", "M_nu2_XX", "M_nu2_XZ", "M_nu2_X", "N_nu2_Z", "M_nu2_ZZ", "M_nu2_Z", "nTot", "bayesImVoltage", "opticalPower", "polarizerVoltages[0]", "polarizerVoltages[1]", "polarizerVoltages[2]", "polarizerVoltages[3]", "temp_1", "biasVoltage_1", "temp_2", "biasVoltage_2", "synErr", "N_EC_rounds", "maintenance_flag", "estimator_name", "f_EC", "E_mu_Z_est", "R", "s", "p",
     ]
