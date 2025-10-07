@@ -7,9 +7,11 @@ import os
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from utils.timefeatures import time_features
+from utils.util import generate_features
 from utils import get_logger
 
 log = get_logger(__name__)
+
 
 def get_data_loaders(config, batch_size):
     # --- 1. Загрузка и полная предобработка данных ---
@@ -32,6 +34,8 @@ def get_data_loaders(config, batch_size):
         log.error(f"Ошибка: Файл данных не найден по пути {config.data_path}")
         return None, None, None, None, -1
 
+    df_raw = generate_features(df_raw)
+
     # --- 2. Выбор признаков для модели ---
     feature_cols = [col for col in df_raw.columns if col not in config.cols_to_drop_from_features and df_raw[col].dtype in [np.int64, np.float64]]
     
@@ -49,14 +53,25 @@ def get_data_loaders(config, batch_size):
     df_processed = df_raw[['id', 'date'] + feature_cols].copy()
     df_processed.replace([np.inf, -np.inf], np.nan, inplace=True)
     df_processed = df_processed.ffill()
-    df_processed.dropna(inplace=True)
+    df_processed.dropna(inplace=True, ignore_index=True)
 
-    # --- 3. Разделение данных ---
-    unique_dates = sorted(df_processed['date'].unique())
-    split_idx = int(len(unique_dates) * 0.8)
-    split_date = unique_dates[split_idx]
-    train_df = df_processed[df_processed['date'] < split_date].copy()
-    valid_df = df_processed[df_processed['date'] >= split_date].copy()
+    # --- 3. Разделение данных (бейзлайн) ---
+    log.info("Разделение данных на train/valid...")
+    train_dfs = []
+    valid_dfs = []
+    
+    HORIZON = config.prediction_length # 8
+    HISTORY = config.context_length   # 160
+
+    for current_id in df_processed["id"].unique():
+        current_df = df_processed[df_processed["id"] == current_id]
+        if len(current_df) > HORIZON + HISTORY:
+            train_dfs.append(current_df.iloc[:-HORIZON])
+            valid_dfs.append(current_df.iloc[-HORIZON - HISTORY:])
+
+    train_df = pd.concat(train_dfs, ignore_index=True)
+    valid_df = pd.concat(valid_dfs, ignore_index=True)
+    
     log.info(f"Данные разделены. Train: {len(train_df)} строк, Valid: {len(valid_df)} строк.")
 
     # --- 4. Масштабирование ---
@@ -75,6 +90,7 @@ def get_data_loaders(config, batch_size):
     log.info("Загрузчики данных (DataLoader) успешно созданы.")
 
     return train_loader, valid_loader, scaler, feature_cols, target_channel_idx
+
 
 class Dataset_Custom(Dataset):
     def __init__(self, df, features_list, size=None, features='S', timeenc=1, freq='h'):
@@ -115,9 +131,6 @@ class Dataset_Custom(Dataset):
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
 
-        if r_end > len(self.data_x):
-            return self.__getitem__(0)
-            
         seq_x = self.data_x[s_begin:s_end]
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]

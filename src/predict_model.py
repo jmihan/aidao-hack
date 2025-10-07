@@ -13,6 +13,7 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from model.patchtst.model import Model
+from utils.util import generate_features
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ def predict(model_dir: str):
     ]
     df_raw = df_raw.rename(columns={"block_id": "id"})
     
+    # --- Генерация новых признаков ---
+    df_raw = generate_features(df_raw)
+
     df_processed = df_raw[['id'] + feature_cols].copy()
     df_processed.replace([np.inf, -np.inf], np.nan, inplace=True)
     df_processed = df_processed.ffill().bfill()

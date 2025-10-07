@@ -1,5 +1,5 @@
 n_gpu: 6
-output_dir: outputs/patchtst_custom/2025-10-07_02-12-37
+output_dir: outputs/patchtst_custom/2025-10-07_17-13-38
 data:
   name: aidao_time_series
   root_path: ./data/
@@ -27,7 +27,7 @@ model:
   arch:
     _target_: src.model.patchtst.model.Model
     configs:
-      enc_in: 38
+      enc_in: 45
       seq_len: 160
       pred_len: 8
       patch_len: 16
