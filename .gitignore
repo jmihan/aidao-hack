@@ -155,3 +155,4 @@ tensorboard/
 *.cbm
 /catboost_info/
 /artifacts/
+/submissions/
