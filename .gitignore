@@ -156,3 +156,4 @@ tensorboard/
 /catboost_info/
 /artifacts/
 /submissions/
+catboost_info/
