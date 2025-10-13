@@ -24,7 +24,7 @@ def train(cfg: DictConfig) -> None:
 
     # --- 1. Загрузка данных ---
     log.info("--- Шаг 1/5: Загрузка и подготовка данных ---")
-    train_loader, valid_loader, scaler, feature_cols, target_channel_idx = get_data_loaders(
+    train_loader, valid_loader, test_loader, scaler, feature_cols, target_channel_idx = get_data_loaders(
         config=cfg.data, 
         batch_size=cfg.hparams.batch_size
     )

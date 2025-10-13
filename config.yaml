@@ -1,5 +1,5 @@
 n_gpu: 6
-output_dir: outputs/patchtst_custom/2025-10-09_16-42-18
+output_dir: outputs/patchtst_custom/2025-10-13_18-07-55
 data:
   name: aidao_time_series
   root_path: ./data/
@@ -27,15 +27,15 @@ model:
   arch:
     _target_: src.model.patchtst.model.Model
     configs:
-      enc_in: 45
+      enc_in: 651
       seq_len: 160
       pred_len: 8
       patch_len: 16
       stride: 8
       e_layers: 4
       n_heads: 8
-      d_model: 64
-      d_ff: 256
+      d_model: 32
+      d_ff: 128
       dropout: 0.2
       fc_dropout: 0.1
       head_dropout: 0.0
@@ -60,7 +60,7 @@ model:
     patience: 3
 hparams:
   epochs: 100
-  batch_size: 256
+  batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.001
   trainer:

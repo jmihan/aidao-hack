@@ -4,92 +4,82 @@ import pandas as pd
 import numpy as np
 import torch
 import os
+import pickle
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import StandardScaler
 from utils.timefeatures import time_features
-from utils.util import generate_features
 from utils import get_logger
 
 log = get_logger(__name__)
 
 
 def get_data_loaders(config, batch_size):
-    # --- 1. Загрузка и полная предобработка данных ---
-    log.info(f"Загрузка данных из {config.data_path}...")
+    # --- 1. Загрузка ПРЕДОБРАБОТАННЫХ и РАЗДЕЛЕННЫХ данных ---
+    log.info("Загрузка предварительно обработанных данных (train, valid, test)...")
+    
+    train_csv_path = os.path.join(config.root_path, 'processed', 'featured_train_dataset.csv')
+    valid_csv_path = os.path.join(config.root_path, 'processed', 'featured_valid_dataset.csv')
+    test_csv_path = os.path.join(config.root_path, 'processed', 'featured_test_dataset.csv')
+    scaler_path = os.path.join(config.root_path, 'processed', 'scaler.pkl')
+
     try:
-        csv_path = os.path.join(config.root_path, config.data_path)
-        df_raw = pd.read_csv(csv_path, header=None)
-        df_raw.columns = [
-            "block_id", "frame_idx", "E_mu_Z", "E_mu_phys_est", "E_mu_X", "E_nu1_X", "E_nu2_X", "E_nu1_Z", "E_nu2_Z",
-            "N_mu_X", "M_mu_XX", "M_mu_XZ", "M_mu_X", "N_mu_Z", "M_mu_ZZ", "M_mu_Z", "N_nu1_X", "M_nu1_XX",
-            "M_nu1_XZ", "M_nu1_X", "N_nu1_Z", "M_nu1_ZZ", "M_nu1_Z", "N_nu2_X", "M_nu2_XX", "M_nu2_XZ",
-            "M_nu2_X", "N_nu2_Z", "M_nu2_ZZ", "M_nu2_Z", "nTot", "bayesImVoltage", "opticalPower",
-            "polarizerVoltages[0]", "polarizerVoltages[1]", "polarizerVoltages[2]", "polarizerVoltages[3]",
-            "temp_1", "biasVoltage_1", "temp_2", "biasVoltage_2", "synErr", "N_EC_rounds",
-            "maintenance_flag", "estimator_name", "f_EC", "E_mu_Z_est", "R", "s", "p",
-        ]
-        df_raw = df_raw.rename(columns={"block_id": "id", "frame_idx": "date"})
-        log.info("Данные успешно загружены.")
+        df_train = pd.read_csv(train_csv_path)
+        df_valid = pd.read_csv(valid_csv_path)
+        df_test = pd.read_csv(test_csv_path)
+        log.info("Предварительно обработанные данные успешно загружены.")
+        log.info(f"  - Train shape: {df_train.shape}")
+        log.info(f"  - Valid shape: {df_valid.shape}")
+        log.info(f"  - Test shape: {df_test.shape}")
+
+    except FileNotFoundError as e:
+        log.error(f"Ошибка: Файл данных не найден: {e}. Убедитесь, что скрипт preprocess_tabular.py был запущен.")
+        return None, None, None, None, None, -1
+
+    # --- 2. Загрузка скейлера ---
+    try:
+        with open(scaler_path, 'rb') as f:
+            scaler = pickle.load(f)
+        log.info(f"StandardScaler успешно загружен из: {scaler_path}")
     except FileNotFoundError:
-        log.error(f"Ошибка: Файл данных не найден по пути {config.data_path}")
-        return None, None, None, None, -1
+        log.error(f"Ошибка: Файл scaler.pkl не найден по пути {scaler_path}. Прерывание.")
+        return None, None, None, None, None, -1
 
-    df_raw = generate_features(df_raw)
-
-    # --- 2. Выбор признаков для модели ---
-    feature_cols = [col for col in df_raw.columns if col not in config.cols_to_drop_from_features and df_raw[col].dtype in [np.int64, np.float64]]
+    # --- 3. Определение признаков и целевой колонки ---
     
-    if config.target_column in feature_cols:
-        feature_cols.insert(0, feature_cols.pop(feature_cols.index(config.target_column)))
+    TARGET_COLUMN = config.target_column
+    
+    feature_cols = [col for col in df_train.columns if df_train[col].dtype in [np.float64, np.int64]]
+    
+    if TARGET_COLUMN in feature_cols:
+        feature_cols.insert(0, feature_cols.pop(feature_cols.index(TARGET_COLUMN)))
     else:
-        log.error(f"Целевая колонка {config.target_column} не найдена среди числовых признаков!")
-        return None, None, None, None, -1
+        log.error(f"Целевая колонка '{TARGET_COLUMN}' не найдена среди числовых признаков в предобработанных данных!")
+        return None, None, None, None, None, -1
         
-    target_channel_idx = feature_cols.index(config.target_column)
+    target_channel_idx = feature_cols.index(TARGET_COLUMN)
     
-    log.info(f"Выбрано {len(feature_cols)} признаков для модели. Целевая колонка: '{config.target_column}' (индекс {target_channel_idx}).")
+    log.info(f"Выбрано {len(feature_cols)} признаков для модели. Целевая колонка: '{TARGET_COLUMN}' (индекс {target_channel_idx}).")
     log.debug(f"Список признаков: {feature_cols}")
 
-    df_processed = df_raw[['id', 'date'] + feature_cols].copy()
-    df_processed.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df_processed = df_processed.ffill()
-    df_processed.dropna(inplace=True, ignore_index=True)
-
-    # --- 3. Разделение данных (бейзлайн) ---
-    log.info("Разделение данных на train/valid...")
-    train_dfs = []
-    valid_dfs = []
+    # --- 4. Создание датасетов и загрузчиков ---
+    log.info("Создание датасетов и загрузчиков данных (DataLoader)...")
     
-    HORIZON = config.prediction_length # 8
-    HISTORY = config.context_length   # 160
-
-    for current_id in df_processed["id"].unique():
-        current_df = df_processed[df_processed["id"] == current_id]
-        if len(current_df) > HORIZON + HISTORY:
-            train_dfs.append(current_df.iloc[:-HORIZON])
-            valid_dfs.append(current_df.iloc[-HORIZON - HISTORY:])
-
-    train_df = pd.concat(train_dfs, ignore_index=True)
-    valid_df = pd.concat(valid_dfs, ignore_index=True)
-    
-    log.info(f"Данные разделены. Train: {len(train_df)} строк, Valid: {len(valid_df)} строк.")
-
-    # --- 4. Масштабирование ---
-    log.info("Масштабирование всех признаков с помощью StandardScaler...")
-    scaler = StandardScaler()
-    train_df.loc[:, feature_cols] = scaler.fit_transform(train_df[feature_cols])
-    valid_df.loc[:, feature_cols] = scaler.transform(valid_df[feature_cols])
-    log.info("Масштабирование завершено.")
-
-    # --- 5. Создание датасетов и загрузчиков ---
-    train_dataset = Dataset_Custom(train_df, features_list=feature_cols, size=[config.context_length, config.label_len, config.prediction_length], features='M')
-    valid_dataset = Dataset_Custom(valid_df, features_list=feature_cols, size=[config.context_length, config.label_len, config.prediction_length], features='M')
+    train_dataset = Dataset_Custom(df_train, features_list=feature_cols, 
+                                   size=[config.context_length, config.label_len, config.prediction_length], 
+                                   features='M')
+    valid_dataset = Dataset_Custom(df_valid, features_list=feature_cols, 
+                                   size=[config.context_length, config.label_len, config.prediction_length], 
+                                   features='M')
+    test_dataset = Dataset_Custom(df_test, features_list=feature_cols, 
+                                   size=[config.context_length, config.label_len, config.prediction_length], 
+                                   features='M')
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 20))
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20))
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20))
+    
     log.info("Загрузчики данных (DataLoader) успешно созданы.")
 
-    return train_loader, valid_loader, scaler, feature_cols, target_channel_idx
+    return train_loader, valid_loader, test_loader, scaler, feature_cols, target_channel_idx
 
 
 class Dataset_Custom(Dataset):
@@ -108,18 +98,16 @@ class Dataset_Custom(Dataset):
 
     def __read_data__(self, df_raw):
         df_stamp = df_raw[['date']].copy()
-        df_stamp['date'] = pd.to_datetime(df_stamp['date'])
-        
-        if self.timeenc == 1:
+        df_stamp['date'] = pd.to_datetime(df_stamp['date'], errors='coerce')
+
+        if self.timeenc == 1 and pd.api.types.is_datetime64_any_dtype(df_stamp['date']):
             datetime_index = pd.DatetimeIndex(df_stamp['date'])
             data_stamp = time_features(datetime_index, freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
         else:
-            df_stamp['month'] = df_stamp.date.dt.month
-            df_stamp['day'] = df_stamp.date.dt.day
-            df_stamp['weekday'] = df_stamp.date.dt.weekday
-            df_stamp['hour'] = df_stamp.date.dt.hour
-            data_stamp = df_stamp.drop(['date'], axis=1).values
+            log.warning("Колонка 'date' не является datetime. Временные признаки (time_features) не будут сгенерированы.")
+            num_time_features = 4
+            data_stamp = np.zeros((len(df_raw), num_time_features))
         
         self.data_x = df_raw[self.features_list].values
         self.data_y = self.data_x

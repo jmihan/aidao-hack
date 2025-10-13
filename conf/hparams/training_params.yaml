@@ -1,5 +1,5 @@
 epochs: 100
-batch_size: 256
+batch_size: 32
 learning_rate: 0.001
 weight_decay: 0.001
 

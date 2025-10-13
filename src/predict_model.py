@@ -10,14 +10,16 @@ from math import ceil
 import torch
 import pandas as pd
 import numpy as np
+from tqdm.auto import tqdm
 from omegaconf import OmegaConf
 
 from model.patchtst.model import Model
-from utils.util import generate_features
+from data_loader.data_loaders import Dataset_Custom
+from torch.utils.data import DataLoader
 
 log = logging.getLogger(__name__)
 
-# --- baseline ---
+# --- Функции для генерации submission (остаются без изменений) ---
 def calculate_ema(prev_ema, current_value, alpha):
     if prev_ema is None:
         return current_value
@@ -57,7 +59,7 @@ def predict(model_dir: str):
     log.info("="*50)
 
     # --- 1. Загрузка артефактов ---
-    log.info("--- Шаг 1/6: Загрузка артефактов (модель, скейлер, конфиг) ---")
+    log.info("--- Шаг 1/6: Загрузка артефактов (модель, конфиг, скейлер) ---")
     artifacts_path = os.path.join(model_dir, "artifacts.pkl")
     model_path = os.path.join(model_dir, "checkpoints", "model_best.pth")
 
@@ -68,10 +70,19 @@ def predict(model_dir: str):
     with open(artifacts_path, "rb") as f:
         artifacts = pickle.load(f)
     
-    scaler = artifacts['scaler']
+    cfg = artifacts['config']
     feature_cols = artifacts['feature_cols']
     target_channel_idx = artifacts['target_channel_idx']
-    cfg = artifacts['config']
+    
+    # Загружаем скейлер из data/processed, как он был сохранен в preprocess_tabular.py
+    scaler_path = os.path.join(cfg.data.root_path, 'data', 'processed', 'scaler.pkl')
+    try:
+        with open(scaler_path, "rb") as f:
+            scaler = pickle.load(f)
+        log.info(f"StandardScaler успешно загружен из: {scaler_path}")
+    except FileNotFoundError:
+        log.error(f"Ошибка: Scaler не найден по пути {scaler_path}. Прерывание.")
+        return
     
     log.info(f"Конфигурация загружена. Количество признаков: {len(feature_cols)}.")
 
@@ -87,44 +98,34 @@ def predict(model_dir: str):
 
     # --- 3. Подготовка тестовых данных ---
     log.info("--- Шаг 2/6: Подготовка тестовых данных ---")
-    csv_path = os.path.join(cfg.data.root_path, cfg.data.data_path)
-    df_raw = pd.read_csv(csv_path, header=None)
-    df_raw.columns = [
-        "block_id", "frame_idx", "E_mu_Z", "E_mu_phys_est", "E_mu_X", "E_nu1_X", "E_nu2_X", "E_nu1_Z", "E_nu2_Z", "N_mu_X", "M_mu_XX", "M_mu_XZ", "M_mu_X", "N_mu_Z", "M_mu_ZZ", "M_mu_Z", "N_nu1_X", "M_nu1_XX", "M_nu1_XZ", "M_nu1_X", "N_nu1_Z", "M_nu1_ZZ", "M_nu1_Z", "N_nu2_X", "M_nu2_XX", "M_nu2_XZ", "M_nu2_X", "N_nu2_Z", "M_nu2_ZZ", "M_nu2_Z", "nTot", "bayesImVoltage", "opticalPower", "polarizerVoltages[0]", "polarizerVoltages[1]", "polarizerVoltages[2]", "polarizerVoltages[3]", "temp_1", "biasVoltage_1", "temp_2", "biasVoltage_2", "synErr", "N_EC_rounds", "maintenance_flag", "estimator_name", "f_EC", "E_mu_Z_est", "R", "s", "p",
-    ]
-    df_raw = df_raw.rename(columns={"block_id": "id", "frame_idx": "date"})
-    
-    # --- Генерация новых признаков ---
-    df_raw = generate_features(df_raw)
+    test_csv_path = os.path.join(cfg.data.root_path, 'data', 'processed', 'featured_test_dataset.csv')
+    try:
+        df_test = pd.read_csv(test_csv_path)
+        log.info(f"Тестовые данные загружены из: {test_csv_path}. Форма: {df_test.shape}")
+    except FileNotFoundError:
+        log.error(f"Ошибка: Тестовый датасет не найден по пути {test_csv_path}. Убедитесь, что preprocess_tabular.py был запущен.")
+        return
 
-    df_processed = df_raw[['id'] + feature_cols].copy()
-    df_processed.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df_processed = df_processed.ffill().bfill()
-
-    test_inputs = []
-    ids_order = []
-    for group_id, group_df in df_processed.groupby('id'):
-        if len(group_df) >= cfg.data.context_length:
-            test_inputs.append(group_df.tail(cfg.data.context_length)[feature_cols].values)
-            ids_order.append(group_id)
-
-    test_inputs_scaled = np.array(test_inputs)
-    sh = test_inputs_scaled.shape
-    test_inputs_scaled = scaler.transform(test_inputs_scaled.reshape(-1, sh[-1])).reshape(sh)
-
-    log.info(f"Подготовлено {len(test_inputs_scaled)} сэмплов для предсказания.")
+    test_dataset = Dataset_Custom(df_test, features_list=feature_cols,
+                                  size=[cfg.data.context_length, cfg.data.label_len, cfg.data.prediction_length],
+                                  features='M')
+    test_loader = DataLoader(test_dataset, batch_size=cfg.hparams.batch_size, shuffle=False, num_workers=cfg.get('n_cpu', 20))
+    log.info(f"Подготовлено {len(test_dataset)} сэмплов для предсказания.")
 
     # --- 4. Получение предсказаний ---
     log.info("--- Шаг 3/6: Генерация предсказаний моделью ---")
     all_predictions = []
     with torch.no_grad():
-        for i in range(len(test_inputs_scaled)):
-            sample = torch.FloatTensor(test_inputs_scaled[i]).unsqueeze(0).to(device)
-            output = model(sample)
+        for (batch_x, _, batch_x_mark, _) in tqdm(test_loader, desc="Предсказание"):
+            batch_x = batch_x.float().to(device)
+            batch_x_mark = batch_x_mark.float().to(device)
+            
+            output = model(batch_x, batch_x_mark) 
             all_predictions.append(output.cpu().numpy())
 
     predictions_scaled = np.concatenate(all_predictions, axis=0)
-    target_predictions_scaled = predictions_scaled[:, :, target_channel_idx].flatten()
+    target_predictions_scaled = predictions_scaled[:, 0, target_channel_idx]
+    log.info(f"Сгенерировано {len(target_predictions_scaled)} предсказаний в масштабированном виде.")
 
     # --- 5. Обратное масштабирование и агрегация ---
     log.info("--- Шаг 4/6: Обратное масштабирование и агрегация ---")
@@ -136,7 +137,7 @@ def predict(model_dir: str):
     
     TOTAL = 2000
     if len(final_predictions) < TOTAL:
-        log.warning(f"Сгенерировано {len(final_predictions)} предсказаний, что меньше {TOTAL}. Submission будет дополнен последним значением.")
+        log.warning(f"Сгенерировано {len(final_predictions)} предсказаний, меньше {TOTAL}. Дополняем последним значением.")
         final_predictions = np.pad(final_predictions, (0, TOTAL - len(final_predictions)), 'edge')
     elif len(final_predictions) > TOTAL:
         log.info(f"Сгенерировано {len(final_predictions)} предсказаний. Агрегируем до {TOTAL} точек.")
@@ -145,20 +146,15 @@ def predict(model_dir: str):
         final_predictions = np.interp(target_indices, original_indices, final_predictions)
 
     target_df = pd.DataFrame({"value": final_predictions})
-    log.info(f"Итоговое количество предсказаний: {len(target_df)}")
+    log.info(f"Итоговое количество предсказаний после агрегации: {len(target_df)}")
 
     # --- 6. Генерация submission.csv ---
     log.info("--- Шаг 5/6: Применение финальной логики и создание submission.csv ---")
-    alpha = 0.33
-    f_ec = 1.15
-    R_range = [round(0.50 + 0.05 * x, 2) for x in range(9)]
-    n = 32000
-    d = 4800
-
-    E_series = pd.to_numeric(target_df.iloc[:, 0], errors="coerce").dropna().reset_index(drop=True)
+    alpha = 0.33; f_ec = 1.15; R_range = [round(0.50 + 0.05 * x, 2) for x in range(9)]; n = 32000; d = 4800
+    E_series = pd.to_numeric(target_df.iloc[:, 0], errors="coerce").dropna()
     prev_ema = None
     rows = []
-    for E_mu_Z in E_series:
+    for E_mu_Z in tqdm(E_series, desc="Генерация submission"):
         ema_value = calculate_ema(prev_ema, float(E_mu_Z), alpha)
         prev_ema = ema_value
         R, s_n, p_n = select_code_rate(ema_value, f_ec, R_range, n, d)
@@ -167,7 +163,7 @@ def predict(model_dir: str):
     submission_df = pd.DataFrame(rows)
     submission_path = "submission.csv"
     submission_df.to_csv(submission_path, header=False, index=False)
-    log.info(f"Файл {submission_path} успешно создан!")
+    log.info(f"Файл {submission_path} успешно создан в {os.getcwd()}!")
     log.info("="*50)
     log.info("Пайплайн предсказания завершен.")
     log.info("="*50)
@@ -178,4 +174,5 @@ if __name__ == '__main__':
     parser.add_argument("model_dir", type=str, help="Path to the Hydra output directory containing the model artifacts.")
     args = parser.parse_args()
     
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     predict(args.model_dir)

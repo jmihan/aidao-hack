@@ -3,15 +3,15 @@ arch:
   _target_: src.model.patchtst.model.Model
   configs:
     # --- Параметры данных ---
-    enc_in: 45
+    enc_in: 651
     seq_len: 160
     pred_len: 8
     patch_len: 16
     stride: 8
     e_layers: 4
     n_heads: 8
-    d_model: 64
-    d_ff: 256
+    d_model: 32
+    d_ff: 128
     dropout: 0.2
     fc_dropout: 0.1
     head_dropout: 0.0
