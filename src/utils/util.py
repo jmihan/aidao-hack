@@ -17,10 +17,7 @@ import pandas as pd
 def is_master():
     return not dist.is_initialized() or dist.get_rank() == 0
 
-def get_logger(name=None,state='train'):
-    if is_master():
-        hydra_conf = OmegaConf.load(f'run/{state}/.hydra/hydra.yaml')
-        logging.config.dictConfig(OmegaConf.to_container(hydra_conf.hydra.job_logging, resolve=True))
+def get_logger(name=None):
     return logging.getLogger(name)
 
 
@@ -102,47 +99,35 @@ def get_logits(model, dataloader):
     targets = targets.cpu()
     return logits, targets
 
-def delete_rows_without_images(df: pd.DataFrame, images_path: str, item_id_col: str = 'ItemID') -> pd.DataFrame:
+
+
+def generate_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Фильтрует DataFrame, оставляя только те строки, для которых существуют
-    соответствующие изображения в указанной папке.
-
-    Args:
-        df (pd.DataFrame): Исходный DataFrame для фильтрации.
-        images_path (str): Путь к директории с изображениями.
-        item_id_col (str): Название колонки с ID элемента (по умолчанию 'ItemID').
-
-    Returns:
-        pd.DataFrame: Отфильтрованный DataFrame.
+    Генерирует новые признаки для датафрейма.
     """
-    print(f"Проверка наличия изображений: {images_path}...")
-
-    if not os.path.isdir(images_path):
-        print(f"Директория '{images_path}' не найдена.")
-        return df
-    try:
-        available_image_ids = {os.path.splitext(f)[0] for f in os.listdir(images_path)}
-        if not available_image_ids:
-             print(f"В директории '{images_path}' не найдено изображений.")
-             return df
-    except Exception as e:
-        print(f"Ошибка при чтении директории '{images_path}': {e}.")
-        return df
-
-    if item_id_col not in df.columns:
-        print(f"Колонка '{item_id_col}' не найдена в DataFrame.")
-        return df
-        
-    initial_rows = len(df)
-
-    df_filtered = df[df[item_id_col].astype(str).isin(available_image_ids)].copy()
+    print("Генерация новых признаков...")
     
-    final_rows = len(df_filtered)
-    removed_count = initial_rows - final_rows
+    df.sort_values(['id', 'date'], inplace=True)
+
+    # 1. Лаговые признаки
+    for lag in [1, 5]:
+        df[f'E_mu_Z_lag_{lag}'] = df.groupby('id')['E_mu_Z'].shift(lag)
+
+    # 2. Скользящие статистики (окно 10)
+    grouped = df.groupby('id')['E_mu_Z']
+    df['E_mu_Z_roll_mean_10'] = grouped.transform(lambda x: x.shift(1).rolling(10).mean())
+    df['E_mu_Z_roll_std_10'] = grouped.transform(lambda x: x.shift(1).rolling(10).std())
+
+    # 3. Глобальные статистики по 'id'
+    block_stats = df.groupby('id')['E_mu_Z'].agg(['mean', 'std']).rename(columns={
+        'mean': 'E_mu_Z_block_mean',
+        'std': 'E_mu_Z_block_std'
+    }).reset_index()
+    df = df.merge(block_stats, on='id', how='left')
     
-    print("Проверка завершена.")
-    print(f"  Исходное количество строк: {initial_rows}")
-    print(f"  Удалено строк без изображений: {removed_count}")
-    print(f"  Итоговое количество строк: {final_rows}")
+    # 4. Бинарный флаг для аномального напряжения
+    df['polarizerVoltages_3_is_zero'] = (df['polarizerVoltages[3]'] == 0).astype(int)
     
-    return df_filtered
+    print(f"Добавлено {len(['E_mu_Z_lag_1', 'E_mu_Z_lag_5', 'E_mu_Z_roll_mean_10', 'E_mu_Z_roll_std_10', 'E_mu_Z_block_mean', 'E_mu_Z_block_std', 'polarizerVoltages_3_is_zero'])} новых признаков.")
+    
+    return df

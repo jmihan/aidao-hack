@@ -1,3 +1,5 @@
+# src/trainer/base.py
+
 import os
 import signal
 import torch
@@ -6,8 +8,8 @@ from pathlib import Path
 from shutil import copyfile
 from numpy import inf
 
-from srcs.utils import write_conf, is_master, get_logger
-from srcs.logger import TensorboardWriter, EpochMetrics
+from utils.util import write_conf, is_master, get_logger
+from logger import TensorboardWriter, EpochMetrics
 
 
 class BaseTrainer(metaclass=ABCMeta):
@@ -18,23 +20,23 @@ class BaseTrainer(metaclass=ABCMeta):
         self.config = config
         self.logger = get_logger('trainer')
 
-        if config['n_gpu']:
+        use_cuda = torch.cuda.is_available()
+        if use_cuda:
             self.device = torch.device('cuda')
-            print('The model is training on the GPU')
+            self.logger.info('Модель будет обучаться на GPU.')
         else:
             self.device = torch.device('cpu')
-            print('The model is training on the CPU')
+            self.logger.info('Модель будет обучаться на CPU.')
         self.model = model.to(self.device)
 
         self.criterion = criterion
         self.metric_ftns = metric_ftns
         self.optimizer = optimizer
-        #self.optimizer = torch.optim.lr_scheduler.ReduceLROnPlateau()
-        cfg_trainer = config['trainer']
-        self.epochs = epochs
-        self.log_step = cfg_trainer['logging_step']
 
-        # setup metric monitoring for monitoring model performance and saving best-checkpoint
+        cfg_trainer = config.hparams.trainer 
+        self.epochs = config.hparams.epochs
+
+        self.log_step = cfg_trainer['logging_step']
         self.monitor = cfg_trainer.get('monitor', 'off')
 
         metric_names = ['loss'] + [met.__name__ for met in self.metric_ftns]
@@ -43,55 +45,39 @@ class BaseTrainer(metaclass=ABCMeta):
         self.checkpt_top_k = cfg_trainer.get('save_topk', -1)
         self.early_stop = cfg_trainer.get('early_stop', inf)
 
-        write_conf(self.config, 'config.yaml')
+        output_dir = os.getcwd()
+        self.checkpt_dir = Path(output_dir) / 'checkpoints'
+        log_dir_tensorboard = Path(output_dir) / 'tensorboard'
+
+        write_conf(self.config, os.path.join(output_dir, 'config.yaml'))
 
         self.start_epoch = 1
-        if hasattr(self.model, 'transformer_encoder'):
-            self.checkpt_dir = Path(self.config.save_ftt_dir)
-        else:
-            self.checkpt_dir = Path(self.config.save_tabnet_dir)
-
-        log_dir = Path(self.config.log_dir)
+        
         if is_master():
-            
-            if not self.checkpt_dir.exists():
-                self.checkpt_dir.mkdir()
-            # setup visualization writer instance
-            if not log_dir.exists():
-                log_dir.mkdir()
-            self.writer = TensorboardWriter(log_dir, cfg_trainer['tensorboard'])
+            self.checkpt_dir.mkdir(parents=True, exist_ok=True)
+            log_dir_tensorboard.mkdir(parents=True, exist_ok=True)
+            self.writer = TensorboardWriter(log_dir_tensorboard, cfg_trainer['tensorboard'])
         else:
-            self.writer = TensorboardWriter(log_dir, False)
+            self.writer = TensorboardWriter(log_dir_tensorboard, False)
 
-        if config.resume is not None:
+        if "resume" in config and config.resume is not None:
             self._resume_checkpoint(config.resume)
 
     @abstractmethod
     def _train_epoch(self, epoch):
-        """
-        Training logic for an epoch
-
-        :param epoch: Current epoch number
-        """
         raise NotImplementedError
 
     def train(self):
-        """
-        Full training logic
-        """
         not_improved_count = 0
         for epoch in range(self.start_epoch, self.epochs + 1):
             result = self._train_epoch(epoch)
             self.ep_metrics.update(epoch, result)
 
-            # print result metrics of this epoch
             max_line_width = max(len(line) for line in str(self.ep_metrics).splitlines())
-            # divider ---
-            self.logger.info('='*max_line_width)
-            self.logger.info('\n'+str(self.ep_metrics.latest()))
-            self.logger.info('='*max_line_width)
+            self.logger.info('=' * max_line_width)
+            self.logger.info(f'\n{self.ep_metrics.latest()}')
+            self.logger.info('=' * max_line_width)
 
-            # check if model performance improved or not, for early stopping and topk saving
             is_best = False
             improved = self.ep_metrics.is_improved()
             if improved:
@@ -100,67 +86,51 @@ class BaseTrainer(metaclass=ABCMeta):
             else:
                 not_improved_count += 1
 
-            if not_improved_count > self.early_stop and is_master():
-                self.logger.info("Validation performance didn\'t improve for {} epochs. "
-                                 "Training stops.".format(self.early_stop))
-                os.kill(os.getppid(), signal.SIGTERM)
+            if self.early_stop < float('inf') and not_improved_count > self.early_stop:
+                self.logger.info(f"Валидационная метрика не улучшалась {self.early_stop} эпох. Остановка обучения.")
+                break
 
             using_topk_save = self.checkpt_top_k > 0
-            self._save_checkpoint(epoch, save_best=is_best, save_latest=using_topk_save)
-            # keep top-k checkpoints only, using monitoring metrics
-            if using_topk_save:
-                self.ep_metrics.keep_topk_checkpt(self.checkpt_dir, self.checkpt_top_k)
+            if is_master():
+                self._save_checkpoint(epoch, save_best=is_best, save_latest=using_topk_save)
+                if using_topk_save:
+                    self.ep_metrics.keep_topk_checkpt(self.checkpt_dir, self.checkpt_top_k)
 
             self.ep_metrics.to_csv('epoch-results.csv')
 
-            # divider ===
-            self.logger.info('*'*max_line_width)
-
+            self.logger.info('*' * max_line_width)
 
     def _save_checkpoint(self, epoch, save_best=False, save_latest=True):
-        """
-        Saving checkpoints
-
-        :param epoch: current epoch number
-        :param log: logging information of the epoch
-        :param save_best: if True, save a copy of current checkpoint file as 'model_best.pth'
-        :param save_latest: if True, save a copy of current checkpoint file as 'model_latest.pth'
-        """
+        state = {
+            'epoch': epoch,
+            'state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'epoch_metrics': self.ep_metrics,
+            'config': self.config
+        }
         filename = str(self.checkpt_dir / f'checkpoint-epoch{epoch}.pth')
-        torch.save(self.model.state_dict(), filename)
-        self.logger.info(f"Model checkpoint saved at: \n    {self.config.cwd}/{filename}")
+        torch.save(state, filename)
+        self.logger.info(f"Сохранен чекпоинт: {filename}")
+        
         if save_latest:
             latest_path = str(self.checkpt_dir / 'model_latest.pth')
-            copyfile(filename, latest_path)
+            torch.save(state, latest_path)
+            
         if save_best:
             best_path = str(self.checkpt_dir / 'model_best.pth')
-            copyfile(filename, best_path)
-            self.logger.info(f"Renewing best checkpoint: \n    ./{best_path}")
+            torch.save(state, best_path)
+            self.logger.info(f"Обновлен лучший чекпоинт: {best_path}")
 
     def _resume_checkpoint(self, resume_path):
-        """
-        Resume from saved checkpoints
-
-        :param resume_path: Checkpoint path to be resumed
-        """
-        resume_path = self.config.resume
-        self.logger.info(f"Loading checkpoint: {resume_path} ...")
+        self.logger.info(f"Загрузка чекпоинта: {resume_path} ...")
         checkpoint = torch.load(resume_path)
         self.start_epoch = checkpoint['epoch'] + 1
-
         self.ep_metrics = checkpoint['epoch_metrics']
-
-        # load architecture params from checkpoint.
-        if checkpoint['config']['arch'] != self.config['arch']:
-            self.logger.warning("Warning: Architecture configuration given in config file is different from that of "
-                                "checkpoint. This may yield an exception while state_dict is being loaded.")
         self.model.load_state_dict(checkpoint['state_dict'])
 
-        # load optimizer state from checkpoint only when optimizer type is not changed.
-        if checkpoint['config']['optimizer']['_target_'] != self.config['optimizer']['_target_']:
-            self.logger.warning("Warning: Optimizer type given in config file is different from that of checkpoint. "
-                                "Optimizer parameters not being resumed.")
-        else:
+        if checkpoint['config']['model']['optimizer']['_target_'] == self.config.model.optimizer._target_:
             self.optimizer.load_state_dict(checkpoint['optimizer'])
+        else:
+            self.logger.warning("Тип оптимизатора в конфиге отличается от чекпоинта. Состояние оптимизатора не загружено.")
 
-        self.logger.info(f"Checkpoint loaded. Resume training from epoch {self.start_epoch}")
+        self.logger.info(f"Чекпоинт загружен. Обучение будет продолжено с эпохи {self.start_epoch}")

@@ -1,92 +1,116 @@
+# src/data_loader/data_loaders.py
+
+import pandas as pd
 import numpy as np
 import torch
-import pandas as pd
 import os
-from torch.utils.data import DataLoader, Dataset
-from pathlib import Path
-from typing import List
-from sklearn.preprocessing import StandardScaler
+import pickle
+from torch.utils.data import Dataset, DataLoader
 from utils.timefeatures import time_features
+from utils import get_logger
+
+log = get_logger(__name__)
+
+
+def get_data_loaders(config, batch_size):
+    # --- 1. Загрузка ПРЕДОБРАБОТАННЫХ и РАЗДЕЛЕННЫХ данных ---
+    log.info("Загрузка предварительно обработанных данных (train, valid, test)...")
+    
+    train_csv_path = os.path.join(config.root_path, 'processed', 'featured_train_dataset.csv')
+    valid_csv_path = os.path.join(config.root_path, 'processed', 'featured_valid_dataset.csv')
+    test_csv_path = os.path.join(config.root_path, 'processed', 'featured_test_dataset.csv')
+    scaler_path = os.path.join(config.root_path, 'processed', 'scaler.pkl')
+
+    try:
+        df_train = pd.read_csv(train_csv_path)
+        df_valid = pd.read_csv(valid_csv_path)
+        df_test = pd.read_csv(test_csv_path)
+        log.info("Предварительно обработанные данные успешно загружены.")
+        log.info(f"  - Train shape: {df_train.shape}")
+        log.info(f"  - Valid shape: {df_valid.shape}")
+        log.info(f"  - Test shape: {df_test.shape}")
+
+    except FileNotFoundError as e:
+        log.error(f"Ошибка: Файл данных не найден: {e}. Убедитесь, что скрипт preprocess_tabular.py был запущен.")
+        return None, None, None, None, None, -1
+
+    # --- 2. Загрузка скейлера ---
+    try:
+        with open(scaler_path, 'rb') as f:
+            scaler = pickle.load(f)
+        log.info(f"StandardScaler успешно загружен из: {scaler_path}")
+    except FileNotFoundError:
+        log.error(f"Ошибка: Файл scaler.pkl не найден по пути {scaler_path}. Прерывание.")
+        return None, None, None, None, None, -1
+
+    # --- 3. Определение признаков и целевой колонки ---
+    
+    TARGET_COLUMN = config.target_column
+    
+    feature_cols = [col for col in df_train.columns if df_train[col].dtype in [np.float64, np.int64]]
+    
+    if TARGET_COLUMN in feature_cols:
+        feature_cols.insert(0, feature_cols.pop(feature_cols.index(TARGET_COLUMN)))
+    else:
+        log.error(f"Целевая колонка '{TARGET_COLUMN}' не найдена среди числовых признаков в предобработанных данных!")
+        return None, None, None, None, None, -1
+        
+    target_channel_idx = feature_cols.index(TARGET_COLUMN)
+    
+    log.info(f"Выбрано {len(feature_cols)} признаков для модели. Целевая колонка: '{TARGET_COLUMN}' (индекс {target_channel_idx}).")
+    log.debug(f"Список признаков: {feature_cols}")
+
+    # --- 4. Создание датасетов и загрузчиков ---
+    log.info("Создание датасетов и загрузчиков данных (DataLoader)...")
+    
+    train_dataset = Dataset_Custom(df_train, features_list=feature_cols, 
+                                   size=[config.context_length, config.label_len, config.prediction_length], 
+                                   features='M')
+    valid_dataset = Dataset_Custom(df_valid, features_list=feature_cols, 
+                                   size=[config.context_length, config.label_len, config.prediction_length], 
+                                   features='M')
+    test_dataset = Dataset_Custom(df_test, features_list=feature_cols, 
+                                   size=[config.context_length, config.label_len, config.prediction_length], 
+                                   features='M')
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 20))
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20))
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20))
+    
+    log.info("Загрузчики данных (DataLoader) успешно созданы.")
+
+    return train_loader, valid_loader, test_loader, scaler, feature_cols, target_channel_idx
+
 
 class Dataset_Custom(Dataset):
-    def __init__(self, root_path, flag='train', size=None,
-                 features='S', data_path='ETTh1.csv',
-                 target='OT', scale=True, timeenc=0, freq='h'):
-        # size [seq_len, label_len, pred_len]
-        # info
-        if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
+    def __init__(self, df, features_list, size=None, features='S', timeenc=1, freq='h'):
+        if size is None:
+            self.seq_len, self.label_len, self.pred_len = 96, 48, 24
         else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
-        # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
-        self.set_type = type_map[flag]
-
+            self.seq_len, self.label_len, self.pred_len = size
+        
         self.features = features
-        self.target = target
-        self.scale = scale
+        self.features_list = features_list
         self.timeenc = timeenc
         self.freq = freq
 
-        self.root_path = root_path
-        self.data_path = data_path
-        self.__read_data__()
+        self.__read_data__(df)
 
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
+    def __read_data__(self, df_raw):
+        df_stamp = df_raw[['date']].copy()
+        df_stamp['date'] = pd.to_datetime(df_stamp['date'], errors='coerce')
 
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        cols = list(df_raw.columns)
-        cols.remove(self.target)
-        cols.remove('date')
-        df_raw = df_raw[['date'] + cols + [self.target]]
-        # print(cols)
-        num_train = int(len(df_raw) * 0.7)
-        num_test = int(len(df_raw) * 0.2)
-        num_vali = len(df_raw) - num_train - num_test
-        border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
-        border2s = [num_train, num_train + num_vali, len(df_raw)]
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
-            self.scaler.fit(train_data.values)
-            # print(self.scaler.mean_)
-            # exit()
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
+        if self.timeenc == 1 and pd.api.types.is_datetime64_any_dtype(df_stamp['date']):
+            datetime_index = pd.DatetimeIndex(df_stamp['date'])
+            data_stamp = time_features(datetime_index, freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
+        else:
+            log.warning("Колонка 'date' не является datetime. Временные признаки (time_features) не будут сгенерированы.")
+            num_time_features = 4
+            data_stamp = np.zeros((len(df_raw), num_time_features))
+        
+        self.data_x = df_raw[self.features_list].values
+        self.data_y = self.data_x
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
@@ -99,117 +123,9 @@ class Dataset_Custom(Dataset):
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        
+        return (torch.FloatTensor(seq_x), torch.FloatTensor(seq_y),
+                torch.FloatTensor(seq_x_mark), torch.FloatTensor(seq_y_mark))
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-    
-
-class Dataset_Pred(Dataset):
-    def __init__(self, root_path, flag='pred', size=None,
-                 features='S', data_path='ETTh1.csv',
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='15min', cols=None):
-        # size [seq_len, label_len, pred_len]
-        # info
-        if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
-        else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
-        # init
-        assert flag in ['pred']
-
-        self.features = features
-        self.target = target
-        self.scale = scale
-        self.inverse = inverse
-        self.timeenc = timeenc
-        self.freq = freq
-        self.cols = cols
-        self.root_path = root_path
-        self.data_path = data_path
-        self.__read_data__()
-
-    def __read_data__(self):
-        self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        if self.cols:
-            cols = self.cols.copy()
-            cols.remove(self.target)
-        else:
-            cols = list(df_raw.columns)
-            cols.remove(self.target)
-            cols.remove('date')
-        df_raw = df_raw[['date'] + cols + [self.target]]
-        border1 = len(df_raw) - self.seq_len
-        border2 = len(df_raw)
-
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            self.scaler.fit(df_data.values)
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        tmp_stamp = df_raw[['date']][border1:border2]
-        tmp_stamp['date'] = pd.to_datetime(tmp_stamp.date)
-        pred_dates = pd.date_range(tmp_stamp.date.values[-1], periods=self.pred_len + 1, freq=self.freq)
-
-        df_stamp = pd.DataFrame(columns=['date'])
-        df_stamp.date = list(tmp_stamp.date.values) + list(pred_dates[1:])
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
-            df_stamp['minute'] = df_stamp.minute.map(lambda x: x // 15)
-            data_stamp = df_stamp.drop(['date'], 1).values
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        if self.inverse:
-            self.data_y = df_data.values[border1:border2]
-        else:
-            self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
-
-    def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = r_begin + self.label_len + self.pred_len
-
-        seq_x = self.data_x[s_begin:s_end]
-        if self.inverse:
-            seq_y = self.data_x[r_begin:r_begin + self.label_len]
-        else:
-            seq_y = self.data_y[r_begin:r_begin + self.label_len]
-        seq_x_mark = self.data_stamp[s_begin:s_end]
-        seq_y_mark = self.data_stamp[r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.data_x) - self.seq_len + 1
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)

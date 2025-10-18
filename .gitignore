@@ -157,3 +157,5 @@ tensorboard/
 /artifacts/
 /submissions/
 catboost_info/
+artifacts.pkl
+digest.pkl

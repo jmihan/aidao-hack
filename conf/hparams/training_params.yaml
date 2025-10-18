@@ -1,0 +1,12 @@
+epochs: 100
+batch_size: 32
+learning_rate: 0.001
+weight_decay: 0.001
+
+trainer:
+  logging_step: 100
+
+  monitor: min loss/valid
+  save_topk: 3
+  early_stop: 20
+  tensorboard: true

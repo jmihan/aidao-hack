@@ -1,0 +1,23 @@
+name: aidao_time_series
+root_path: "./data/"
+data_path: "frames_errors.csv"
+context_length: 160
+prediction_length: 8
+label_len: 48 
+
+features: "M"
+target_column: "E_mu_Z"
+
+cols_to_drop_from_features:
+  - id
+  - date
+  - E_mu_phys_est
+  - synErr
+  - N_EC_rounds
+  - maintenance_flag
+  - estimator_name
+  - f_EC
+  - E_mu_Z_est
+  - R
+  - s
+  - p
