@@ -19,7 +19,6 @@ from torch.utils.data import DataLoader
 
 log = logging.getLogger(__name__)
 
-# --- Функции для генерации submission (остаются без изменений) ---
 def calculate_ema(prev_ema, current_value, alpha):
     if prev_ema is None:
         return current_value
@@ -58,7 +57,6 @@ def predict(model_dir: str):
     log.info(f"Директория с моделью: {model_dir}")
     log.info("="*50)
 
-    # --- 1. Загрузка артефактов ---
     log.info("--- Шаг 1/6: Загрузка артефактов (модель, конфиг, скейлер) ---")
     artifacts_path = os.path.join(model_dir, "artifacts.pkl")
     model_path = os.path.join(model_dir, "checkpoints", "model_best.pth")
@@ -74,7 +72,6 @@ def predict(model_dir: str):
     feature_cols = artifacts['feature_cols']
     target_channel_idx = artifacts['target_channel_idx']
     
-    # Загружаем скейлер из data/processed, как он был сохранен в preprocess_tabular.py
     scaler_path = os.path.join(cfg.data.root_path, 'data', 'processed', 'scaler.pkl')
     try:
         with open(scaler_path, "rb") as f:
@@ -86,7 +83,6 @@ def predict(model_dir: str):
     
     log.info(f"Конфигурация загружена. Количество признаков: {len(feature_cols)}.")
 
-    # --- 2. Инициализация модели и загрузка весов ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_configs = Namespace(**cfg.model.arch.configs)
     model = Model(configs=model_configs)
@@ -96,7 +92,6 @@ def predict(model_dir: str):
     model.eval()
     log.info(f"Модель успешно загружена на {device}.")
 
-    # --- 3. Подготовка тестовых данных ---
     log.info("--- Шаг 2/6: Подготовка тестовых данных ---")
     test_csv_path = os.path.join(cfg.data.root_path, 'data', 'processed', 'featured_test_dataset.csv')
     try:
@@ -112,7 +107,6 @@ def predict(model_dir: str):
     test_loader = DataLoader(test_dataset, batch_size=cfg.hparams.batch_size, shuffle=False, num_workers=cfg.get('n_cpu', 20))
     log.info(f"Подготовлено {len(test_dataset)} сэмплов для предсказания.")
 
-    # --- 4. Получение предсказаний ---
     log.info("--- Шаг 3/6: Генерация предсказаний моделью ---")
     all_predictions = []
     with torch.no_grad():
@@ -127,7 +121,6 @@ def predict(model_dir: str):
     target_predictions_scaled = predictions_scaled[:, 0, target_channel_idx]
     log.info(f"Сгенерировано {len(target_predictions_scaled)} предсказаний в масштабированном виде.")
 
-    # --- 5. Обратное масштабирование и агрегация ---
     log.info("--- Шаг 4/6: Обратное масштабирование и агрегация ---")
     dummy_array = np.zeros((len(target_predictions_scaled), len(feature_cols)))
     dummy_array[:, target_channel_idx] = target_predictions_scaled
@@ -148,7 +141,6 @@ def predict(model_dir: str):
     target_df = pd.DataFrame({"value": final_predictions})
     log.info(f"Итоговое количество предсказаний после агрегации: {len(target_df)}")
 
-    # --- 6. Генерация submission.csv ---
     log.info("--- Шаг 5/6: Применение финальной логики и создание submission.csv ---")
     alpha = 0.33; f_ec = 1.15; R_range = [round(0.50 + 0.05 * x, 2) for x in range(9)]; n = 32000; d = 4800
     E_series = pd.to_numeric(target_df.iloc[:, 0], errors="coerce").dropna()
