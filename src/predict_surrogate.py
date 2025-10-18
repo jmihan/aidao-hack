@@ -8,16 +8,14 @@ from tqdm import tqdm
 def find_optimal_params_for_row(row, surrogate_model, feature_names, alpha: float):
     """
     Находит оптимальные {R, s} для одной строки данных (одного фрейма)
-    путем поиска по сетке с использованием суррогатной модели.
+    путем поиска по сетке с использованием суррогатной модели
     """
     best_params = {'R': -1, 's': -1, 'score': float('inf')}
     
-    # Создаем базовый вектор признаков для этой строки
     base_features = row[feature_names].to_dict()
     
-    # Сетка поиска
     R_candidates = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
-    s_candidates = np.arange(0, 4801, 100) # Шаг 100
+    s_candidates = np.arange(0, 4801, 100)
 
     search_space = []
     for r_cand in R_candidates:
@@ -30,7 +28,6 @@ def find_optimal_params_for_row(row, surrogate_model, feature_names, alpha: floa
     
     search_df = pd.DataFrame(search_space)
     
-    # Пакетное предсказание для ускорения
     predicted_log_rounds = surrogate_model.predict(search_df)
 
     cost = predicted_log_rounds - alpha * search_df['R'].values
@@ -43,119 +40,10 @@ def find_optimal_params_for_row(row, surrogate_model, feature_names, alpha: floa
     
     return best_params['R'], best_params['s']
 
-# def make_predictions(df_featured: pd.DataFrame, qber_model: CatBoostRegressor, surrogate_model: CatBoostRegressor, alpha: float) -> pd.DataFrame:
-#     """
-#     Выполняет предсказание E_mu_Z и последующий поиск оптимальных {R, s}.
-#     """
-
-#     print("  - Шаг 1: Предсказание E_mu_Z для всех фреймов...")
-#     features_for_qber = df_featured[qber_model.feature_names_]
-#     predicted_qber = qber_model.predict(features_for_qber)
-#     df_featured['E_mu_Z_pred'] = predicted_qber
-#     df_featured['E_mu_Z'] = predicted_qber
-#     print("    - Предсказания для E_mu_Z получены.")
-    
-#     print(f"  - Шаг 2: Поиск оптимальных {{R, s}} с alpha = {alpha}...")
-#     tqdm.pandas(desc="    Поиск по сетке")
-#     optimal_params = df_featured.progress_apply(
-#         lambda row: find_optimal_params_for_row(row, surrogate_model, surrogate_model.feature_names_, alpha), 
-#         axis=1
-#     )
-    
-#     submission_df = pd.DataFrame()
-#     submission_df['E_mu_Z_pred'] = df_featured['E_mu_Z_pred']
-#     submission_df['R_pred'] = [params[0] for params in optimal_params]
-#     submission_df['s_pred'] = [params[1] for params in optimal_params]
-#     submission_df['p_pred'] = 4800 - submission_df['s_pred']
-    
-#     print("  - Финальный DataFrame с оптимальными параметрами для каждого фрейма сформирован.")
-#     return submission_df
-
-# def make_predictions(df_featured: pd.DataFrame, qber_model: CatBoostRegressor, surrogate_model: CatBoostRegressor, alpha: float) -> pd.DataFrame:
-#     """
-#     Выполняет предсказание E_mu_Z и последующий поиск оптимальных {R, s}
-#     с использованием векторизованного (быстрого) подхода.
-#     """
-#     print("  - Шаг 1: Предсказание E_mu_Z для всех фреймов...")
-#     features_for_qber = df_featured[qber_model.feature_names_]
-#     predicted_qber = qber_model.predict(features_for_qber)
-#     df_featured['E_mu_Z_pred'] = predicted_qber
-#     df_featured['E_mu_Z'] = predicted_qber
-#     print("    - Предсказания для E_mu_Z получены.")
-
-#     print(f"  - Шаг 2: Векторизованный поиск оптимальных {{R, s}} с alpha = {alpha}...")
-    
-#     # --- Параметры поиска ---
-#     R_CANDIDATES = np.array([0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9])
-#     S_CANDIDATES = np.arange(0, 4801, 100)
-#     N_R_CANDIDATES = len(R_CANDIDATES)
-#     N_S_CANDIDATES = len(S_CANDIDATES)
-#     TOTAL_CANDIDATES = N_R_CANDIDATES * N_S_CANDIDATES
-    
-#     # Создаем полную сетку кандидатов один раз
-#     r_grid, s_grid = np.meshgrid(R_CANDIDATES, S_CANDIDATES)
-#     p_grid = 4800 - s_grid
-    
-#     candidates_df = pd.DataFrame({
-#         'R': r_grid.ravel(),
-#         's': s_grid.ravel(),
-#         'p': p_grid.ravel()
-#     })
-
-#     # --- Пакетная обработка ---
-#     BATCH_SIZE = 1024 # Можно настроить в зависимости от RAM
-#     results = []
-    
-#     surrogate_features = surrogate_model.feature_names_
-#     base_feature_names = [f for f in surrogate_features if f not in ['R', 's', 'p']]
-
-#     for i in tqdm(range(0, len(df_featured), BATCH_SIZE), desc="    Обработка батчей"):
-#         batch_df = df_featured.iloc[i:i+BATCH_SIZE]
-#         n_batch = len(batch_df)
-        
-#         # Повторяем базовые признаки для каждого кандидата
-#         batch_base_features = batch_df[base_feature_names]
-#         repeated_features = pd.DataFrame(np.repeat(batch_base_features.values, TOTAL_CANDIDATES, axis=0))
-#         repeated_features.columns = base_feature_names
-        
-#         # Повторяем сетку кандидатов для каждой строки в батче
-#         tiled_candidates = pd.concat([candidates_df] * n_batch, ignore_index=True)
-        
-#         # Собираем полный датафрейм для предсказания
-#         search_df = pd.concat([repeated_features, tiled_candidates], axis=1)
-#         search_df = search_df[surrogate_features] # Упорядочиваем колонки
-
-#         # Одно большое предсказание
-#         predicted_log_rounds = surrogate_model.predict(search_df)
-        
-#         # Новая функция стоимости
-#         cost = predicted_log_rounds - alpha * search_df['R'].values
-        
-#         # Находим лучшие индексы
-#         cost_matrix = cost.reshape(n_batch, TOTAL_CANDIDATES)
-#         best_indices = np.argmin(cost_matrix, axis=1)
-        
-#         # Сохраняем лучшие параметры для этого батча
-#         best_r = candidates_df['R'].iloc[best_indices].values
-#         best_s = candidates_df['s'].iloc[best_indices].values
-        
-#         results.append(pd.DataFrame({'R_pred': best_r, 's_pred': best_s}))
-        
-#     final_results = pd.concat(results, ignore_index=True)
-
-#     submission_df = pd.DataFrame()
-#     submission_df['E_mu_Z_pred'] = df_featured['E_mu_Z_pred']
-#     submission_df['R_pred'] = final_results['R_pred']
-#     submission_df['s_pred'] = final_results['s_pred']
-#     submission_df['p_pred'] = 4800 - submission_df['s_pred']
-    
-#     print("  - Финальный DataFrame с оптимальными параметрами для каждого фрейма сформирован.")
-#     return submission_df
-
 def make_predictions(df_featured: pd.DataFrame, qber_model: CatBoostRegressor, surrogate_model: CatBoostRegressor, threshold_1: float, threshold_2: float) -> pd.DataFrame:
     """
     Выполняет предсказание E_mu_Z и поиск оптимальных {R, s}
-    с использованием стратегии "Бюджета риска" и пакетной обработки.
+    с использованием стратегии бюджета риска и пакетной обработки
     """
     print("  - Шаг 1: Предсказание E_mu_Z для всех фреймов...")
     features_for_qber = df_featured[qber_model.feature_names_]
@@ -237,7 +125,7 @@ def make_predictions(df_featured: pd.DataFrame, qber_model: CatBoostRegressor, s
 
 def compress_and_format_submission(df_full_predictions: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Сжимает полные предсказания до 2000 строк и форматирует их.
+    Сжимает полные предсказания до 2000 строк и форматирует их
     """
 
     print("  - Сжатие предсказаний до 2000 строк...")
@@ -290,7 +178,7 @@ def compress_and_format_submission(df_full_predictions: pd.DataFrame, original_d
     return final_df
 
 def main():
-    """Главная функция для запуска пайплайна предсказания."""
+    """Главная функция для запуска пайплайна предсказания"""
 
     parser = argparse.ArgumentParser(description="Скрипт для генерации submission.csv со стратегией 'Бюджета риска'")
     
@@ -302,7 +190,6 @@ def main():
     parser.add_argument('--surrogate_model', type=str, default=str(project_root / 'models' / 'catboost_SURROGATE_model_optuna.cbm'))
     parser.add_argument('--output', type=str, default=str(project_root / 'submissions' / 'submission_risk_budget.csv'))
     
-    # [КЛЮЧЕВОЕ ИЗМЕНЕНИЕ] Новые гиперпараметры - пороги для E_mu_Z
     parser.add_argument('--t1', type=float, default=0.01, help='Порог E_mu_Z для перехода от низкого к среднему риску.')
     parser.add_argument('--t2', type=float, default=0.08, help='Порог E_mu_Z для перехода от среднего к высокому риску.')
 

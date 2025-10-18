@@ -1,14 +1,3 @@
-"""
-Обучение модели CatBoost для предсказания s.
-
-Этот скрипт:
-1. Загружает датасет с признаками.
-2. Загружает уже обученную модель для R.
-3. Генерирует предсказания R и добавляет их как новый признак.
-4. Выполняет стратифицированное разделение данных (по R_grouped).
-5. Обучает модель CatBoostRegressor для предсказания s.
-6. Оценивает качество регрессионной модели и сохраняет артефакты.
-"""
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -33,7 +22,7 @@ RANDOM_STATE = 42
 
 def load_and_prepare_data_for_s(input_path: Path, r_model_path: Path):
     """
-    Загружает данные, генерирует предсказания R как признак и разделяет данные.
+    Загружает данные, генерирует предсказания R как признак и разделяет данные
     """
 
     print("1. Загрузка данных и генерация признака R_pred...")
@@ -105,7 +94,7 @@ def load_and_prepare_data_for_s(input_path: Path, r_model_path: Path):
     return X_train, y_train, X_val, y_val
 
 def objective_s(trial, X_train, y_train, X_val, y_val):
-    """Целевая функция для Optuna (регрессия s)."""
+    """Целевая функция для Optuna (регрессия s)"""
 
     params = {
         'iterations': 2000,
@@ -131,7 +120,7 @@ def objective_s(trial, X_train, y_train, X_val, y_val):
     return rmse 
 
 def find_best_params_for_s(X_train, y_train, X_val, y_val, n_trials=50):
-    """Запускает исследование Optuna для поиска лучших параметров для модели s."""
+    """Запускает исследование Optuna для поиска лучших параметров для модели s"""
 
     print(f"\n3. Запуск Optuna для поиска гиперпараметров s ({n_trials} попыток)...")
     study = optuna.create_study(direction='minimize')
@@ -147,7 +136,7 @@ def find_best_params_for_s(X_train, y_train, X_val, y_val, n_trials=50):
 
 
 def train_final_s_model(X_train, y_train, X_val, y_val, best_params):
-    """Обучает модель CatBoostRegressor на лучших параметрах."""
+    """Обучает модель CatBoostRegressor на лучших параметрах"""
 
     print("\n4. Обучение модели CatBoost для s на лучших параметрах...")
     
@@ -168,7 +157,7 @@ def train_final_s_model(X_train, y_train, X_val, y_val, best_params):
     return model
 
 def evaluate_s_model(model, X_val, y_val, output_dir: Path):
-    """Оценивает регрессионную модель и сохраняет артефакты."""
+    """Оценивает регрессионную модель и сохраняет артефакты"""
 
     print("\n4. Оценка модели s и сохранение артефактов...")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +190,7 @@ def evaluate_s_model(model, X_val, y_val, output_dir: Path):
     print(f"  - Обученная модель для s сохранена в: {model_path}")
 
 def main():
-    """Главная функция пайплайна обучения модели s с Optuna."""
+    """Главная функция пайплайна обучения модели s с Optuna"""
 
     parser = argparse.ArgumentParser(description="Скрипт для обучения модели s с Optuna")
     

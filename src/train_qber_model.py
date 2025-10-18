@@ -15,12 +15,11 @@ optuna.logging.set_verbosity(optuna.logging.INFO)
 SESSION_ID_COL = 'id'
 TARGET_COLUMN_QBER = 'E_mu_Z'
 
-# [Важно!] Признаки, которые являются утечкой данных или не будут доступны на момент предсказания
 COLS_TO_DROP_FROM_FEATURES = [
     TARGET_COLUMN_QBER, 
-    'R', 's', 'p',          # Эти параметры выбираются ПОСЛЕ оценки QBER
-    'N_EC_rounds',          # Это результат, а не предиктор
-    'delta_err_est',        # Этот признак напрямую содержит таргет (E_mu_Z - E_mu_Z_est)
+    'R', 's', 'p',          
+    'N_EC_rounds',          
+    'delta_err_est',        
     SESSION_ID_COL, 
     'date'
 ]
@@ -28,7 +27,7 @@ VALIDATION_SIZE = 0.2
 RANDOM_STATE = 42
 
 def load_and_prepare_data(input_path: Path):
-    """Загружает данные и выполняет разделение по сессиям (id)."""
+    """Загружает данные и выполняет разделение по сессиям (id)"""
 
     print("1. Загрузка и подготовка данных...")
     try:
@@ -57,7 +56,7 @@ def load_and_prepare_data(input_path: Path):
     return X_train, y_train, X_val, y_val
 
 def objective(trial, X_train, y_train, X_val, y_val):
-    """Целевая функция для Optuna."""
+    """Целевая функция для Optuna"""
 
     params = {
         'iterations': 2000,
@@ -83,7 +82,7 @@ def objective(trial, X_train, y_train, X_val, y_val):
     return rmse
 
 def find_best_params(X_train, y_train, X_val, y_val, n_trials=10):
-    """Запускает исследование Optuna для поиска лучших параметров."""
+    """Запускает исследование Optuna для поиска лучших параметров"""
 
     print(f"\n3. Запуск Optuna для поиска лучших гиперпараметров ({n_trials} попыток)...")
     study = optuna.create_study(direction='minimize')
@@ -98,7 +97,7 @@ def find_best_params(X_train, y_train, X_val, y_val, n_trials=10):
     return study.best_params
 
 def train_final_model(X_train, y_train, X_val, y_val, best_params):
-    """Обучает модель CatBoostRegressor на лучших параметрах."""
+    """Обучает модель CatBoostRegressor на лучших параметрах"""
 
     print("\n4. Обучение регрессионной модели для E_mu_Z на лучших параметрах...")
     
@@ -120,7 +119,7 @@ def train_final_model(X_train, y_train, X_val, y_val, best_params):
     return model
 
 def evaluate_and_save_artifacts(model, X_val, y_val, output_dir: Path):
-    """Оценивает регрессионную модель и сохраняет артефакты."""
+    """Оценивает регрессионную модель и сохраняет артефакты"""
 
     print("\n5. Оценка финальной модели E_mu_Z и сохранение артефактов...")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -178,7 +177,7 @@ def evaluate_and_save_artifacts(model, X_val, y_val, output_dir: Path):
     print(f"  - Обученная модель для E_mu_Z сохранена в: {model_path}")
 
 def main():
-    """Главная функция для запуска всего пайплайна обучения модели E_mu_Z."""
+    """Главная функция для запуска всего пайплайна обучения модели E_mu_Z"""
 
     parser = argparse.ArgumentParser(description="Скрипт для обучения регрессионной модели E_mu_Z")
     

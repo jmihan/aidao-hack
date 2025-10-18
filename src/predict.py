@@ -1,13 +1,3 @@
-"""
-скрипт для генерации submission.csv.
-
-Этот скрипт:
-1. Загружает датасет с уже сгенерированными признаками.
-2. Загружает обученные модели для R и s.
-3. Последовательно применяет модели для получения предсказаний {R, s, p}.
-4. Реализует стратегию для предсказания E_mu_Z.
-5. Формирует и сохраняет итоговый submission-файл.
-"""
 import pandas as pd
 import numpy as np
 import argparse
@@ -17,7 +7,7 @@ from tqdm import tqdm
 
 def make_predictions(df_featured: pd.DataFrame, r_model: CatBoostClassifier, s_model: CatBoostRegressor) -> pd.DataFrame:
     """
-    Выполняет двухступенчатое предсказание R и s, а также E_mu_Z.
+    Выполняет двухступенчатое предсказание R и s, а также E_mu_Z
     """
 
     print("  - Начало предсказания...")
@@ -47,7 +37,7 @@ def make_predictions(df_featured: pd.DataFrame, r_model: CatBoostClassifier, s_m
 def compress_and_format_submission(df_full_predictions: pd.DataFrame, original_df: pd.DataFrame) -> pd.DataFrame:
     """
     Сжимает полные предсказания до 2000 строк и форматирует их
-    согласно требованиям сабмишена.
+    согласно требованиям сабмишена
     """
 
     print("  - Сжатие предсказаний до 2000 строк...")
@@ -99,7 +89,7 @@ def compress_and_format_submission(df_full_predictions: pd.DataFrame, original_d
     return final_df
 
 def main():
-    """Главная функция для запуска пайплайна предсказания."""
+    """Главная функция для запуска пайплайна предсказания"""
 
     parser = argparse.ArgumentParser(description="Упрощенный скрипт для генерации submission.csv")
     

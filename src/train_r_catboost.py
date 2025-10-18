@@ -1,13 +1,3 @@
-"""
-Обучение модели CatBoost для предсказания R с подбором гиперпараметров с помощью Optuna.
-
-Этот скрипт:
-1. Загружает датасет с признаками.
-2. Выполняет стратифицированное разделение данных.
-3. Запускает исследование Optuna для поиска лучших гиперпараметров.
-4. Обучает финальную модель CatBoostClassifier на найденных параметрах.
-5. Оценивает качество финальной модели и сохраняет артефакты.
-"""
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,7 +18,7 @@ VALIDATION_SIZE = 0.2
 RANDOM_STATE = 42
 
 def load_and_prepare_data(input_path: Path):
-    """Загружает данные, объединяет редкие классы R и выполняет стратифицированное разделение."""
+    """Загружает данные, объединяет редкие классы R и выполняет стратифицированное разделение"""
 
     print("1. Загрузка и подготовка данных...")
     try:
@@ -73,7 +63,7 @@ def load_and_prepare_data(input_path: Path):
     return X_train, y_train, X_val, y_val, all_possible_classes
 
 def objective(trial, X_train, y_train, X_val, y_val):
-    """Целевая функция для Optuna."""
+    """Целевая функция для Optuna"""
 
     params = {
         'iterations': 2000,
@@ -104,7 +94,7 @@ def objective(trial, X_train, y_train, X_val, y_val):
     return f1
 
 def find_best_params(X_train, y_train, X_val, y_val, n_trials=10):
-    """Запускает исследование Optuna для поиска лучших параметров."""
+    """Запускает исследование Optuna для поиска лучших параметров"""
 
     print(f"\n4. Запуск Optuna для поиска лучших гиперпараметров ({n_trials} попыток)...")
     study = optuna.create_study(direction='maximize')
@@ -119,7 +109,7 @@ def find_best_params(X_train, y_train, X_val, y_val, n_trials=10):
     return study.best_params
 
 def train_final_model(X_train, y_train, X_val, y_val, best_params):
-    """Обучает модель CatBoostClassifier на лучших параметрах."""
+    """Обучает модель CatBoostClassifier на лучших параметрах"""
 
     print("\n5. Обучение модели CatBoost для R на лучших параметрах...")
     
@@ -142,7 +132,7 @@ def train_final_model(X_train, y_train, X_val, y_val, best_params):
     return model
 
 def evaluate_and_save_artifacts(model, X_val, y_val, class_names, output_dir: Path):
-    """Оценивает модель и сохраняет артефакты."""
+    """Оценивает модель и сохраняет артефакты"""
 
     print("\n6. Оценка финальной модели R и сохранение артефактов...")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +159,7 @@ def evaluate_and_save_artifacts(model, X_val, y_val, class_names, output_dir: Pa
     print(f"  - Обученная модель для R сохранена в: {model_path}")
 
 def main():
-    """Главная функция для запуска всего пайплайна обучения модели R с Optuna."""
+    """Главная функция для запуска всего пайплайна обучения модели R с Optuna"""
 
     parser = argparse.ArgumentParser(description="Скрипт для обучения модели R с Optuna")
     

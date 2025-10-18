@@ -1,13 +1,3 @@
-"""
-Предобработка данных и Feature Engineering.
-
-Этот скрипт выполняет следующие шаги:
-1. Загружает сырые данные.
-2. Проводит базовую очистку и предобработку (удаление колонок, обработка пропусков).
-3. Генерирует новые признаки на основе временной динамики (лаги, скользящие статистики).
-4. Генерирует признаки-взаимодействия (дельты, отношения).
-5. Сохраняет обработанный датасет, готовый для обучения модели.
-"""
 import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
@@ -15,21 +5,12 @@ from pathlib import Path
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
-# ==============================================================================
-# КОНФИГУРАЦИЯ
-# ==============================================================================
-
-# --- Пути к файлам ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 INPUT_DATA_PATH = PROJECT_ROOT / 'data' / 'raw' / 'frames_errors.csv'
 OUTPUT_DATA_PATH = PROJECT_ROOT / 'data' / 'processed' / 'featured_dataset.csv'
 
-
-# --- Параметры обработки ---
 COLUMNS_TO_DROP = ['nTot', 'estimator_name', "E_mu_phys_est", "f_EC",]
 
-# Ключевые предикторы, для которых будем генерировать временные признаки.
-# Выбраны на основе EDA (высокая корреляция, "режимные" признаки).
 KEY_PREDICTORS = [
     'E_mu_Z',     
     'E_nu1_Z',     
@@ -46,16 +27,10 @@ KEY_PREDICTORS = [
     'p',
 ]
 
-# --- Параметры генерации признаков ---
 LAG_STEPS = [1, 2, 3, 5]
 
-# Размеры окон для скользящих статистик (короткое и среднее окно)
 ROLLING_WINDOWS = [5, 10]
 
-
-# ==============================================================================
-# ЗАГРУЗКА ДАННЫХ
-# ==============================================================================
 print("1. Загрузка сырых данных...")
 try:
     df = pd.read_csv(INPUT_DATA_PATH)
@@ -116,13 +91,8 @@ except FileNotFoundError:
     print(f"Ошибка: Файл не найден по пути '{INPUT_DATA_PATH}'. Прерывание работы.")
     exit()
 
-
-# ==============================================================================
-# ПРЕДОБРАБОТКА И ОЧИСТКА
-# ==============================================================================
 print("\n2. Предобработка и очистка данных...")
 
-# --- Удаление ненужных колонок ---
 df.drop(columns=COLUMNS_TO_DROP, inplace=True)
 print(f"  - Колонки {COLUMNS_TO_DROP} удалены.")
 
@@ -133,15 +103,12 @@ df = df.rename(
     }
 )
 
-# ==============================================================================
-# ГЕНЕРАЦИЯ ПРИЗНАКОВ (FEATURE ENGINEERING)
-# ==============================================================================
 print("\n3. Генерация новых признаков...")
 tqdm.pandas(desc="Прогресс")
 
 df.sort_values(by=['id', 'date'], inplace=True)
 
-# --- 3.1 Контекстные признаки (Режимы работы) ---
+# --- Контекстные признаки (Режимы работы) ---
 print("  - Создание контекстных признаков...")
 df['time_since_maintenance'] = df.groupby('id')['maintenance_flag'].transform(
     lambda x: x.groupby((x != x.shift()).cumsum()).cumcount() + 1
@@ -154,33 +121,28 @@ physical_features = [
     'biasVoltage_1', 'temp_2', 'biasVoltage_2'
 ]
 scaler = StandardScaler()
-# Используем .copy(), чтобы избежать SettingWithCopyWarning
 df_physical_scaled = pd.DataFrame(scaler.fit_transform(df[physical_features]), index=df.index)
 
 kmeans = KMeans(n_clusters=4, random_state=42, n_init='auto')
 df['physical_cluster'] = kmeans.fit_predict(df_physical_scaled)
-# Кластер с наименьшим количеством точек, скорее всего, аномальный
 anomalous_cluster_id = df['physical_cluster'].value_counts().idxmin()
 df['is_anomalous_cluster'] = (df['physical_cluster'] == anomalous_cluster_id).astype(int)
 
 
-# --- 3.2 Временные признаки (Динамика) ---
+# --- Временные признаки (Динамика) ---
 print("  - Создание временных признаков...")
 all_numeric_features = df.select_dtypes(include=np.number).columns.tolist()
-# Исключаем id, date и целевые переменные из генерации, чтобы избежать утечек
 features_for_dynamics = [
     f for f in all_numeric_features if f not in [
         'id', 'date', 'R', 's', 'p', 'N_EC_rounds', 'E_mu_Z'
     ]
 ]
-features_for_dynamics.append('s') # s может быть полезным для предсказания самого себя
+features_for_dynamics.append('s') 
 
 for col in tqdm(features_for_dynamics, desc="  Динамика"):
-    # Лаги
     for lag in LAG_STEPS:
         df[f'{col}_lag_{lag}'] = df.groupby('id')[col].shift(lag)
     
-    # Скользящие статистики
     for win in ROLLING_WINDOWS:
         rolling_group = df.groupby('id')[col].rolling(window=win, min_periods=1)
         df[f'{col}_roll_mean_{win}'] = rolling_group.mean().reset_index(level=0, drop=True)
@@ -188,15 +150,13 @@ for col in tqdm(features_for_dynamics, desc="  Динамика"):
         df[f'{col}_roll_max_{win}'] = rolling_group.max().reset_index(level=0, drop=True)
         df[f'{col}_roll_min_{win}'] = rolling_group.min().reset_index(level=0, drop=True)
 
-    # Разница с предыдущим значением (моментум)
     df[f'{col}_diff'] = df.groupby('id')[col].diff()
     
-    # EWMA (Экспоненциально взвешенное скользящее среднее)
     ewm = df.groupby('id')[col].ewm(span=5).mean()
     df[f'{col}_ewm_5'] = ewm.reset_index(level=0, drop=True)
 
 
-# --- 3.3 Признаки-взаимодействия (Отношения и Дельты) ---
+# --- Признаки-взаимодействия (Отношения и Дельты) ---
 print("  - Создание признаков-взаимодействий...")
 epsilon = 1e-9
 
@@ -217,12 +177,11 @@ count_pairs = [
 for c1, c2 in count_pairs:
     df[f'ratio_{c1}_div_{c2}'] = df[c1] / (df[c2] + epsilon)
 
-# Взаимодействия ключевых физических параметров с оценкой ошибки
 for col in ['temp_1', 'temp_2', 'opticalPower', 'biasVoltage_1', 'biasVoltage_2']:
     df[f'inter_{col}_x_E_mu_Z_est'] = df[col] * df['E_mu_Z_est']
 
 
-# --- 3.4 Признаки на уровне сессии (Агрегаты по 'id') ---
+# --- Признаки на уровне сессии (Агрегаты по 'id') ---
 print("  - Создание признаков на уровне сессии...")
 session_features = [
     'E_mu_Z_est', 'E_mu_X', 'temp_1', 'temp_2', 'opticalPower', 's'
@@ -239,19 +198,13 @@ for col in tqdm(session_features, desc="  Агрегаты по ID"):
 
 print("  - Генерация признаков завершена.")
 
-
-# ==============================================================================
-# ЗАВЕРШЕНИЕ И СОХРАНЕНИЕ
-# ==============================================================================
 print("\n4. Завершение...")
 
-# --- Финальная проверка ---
 final_na_count = df.isnull().sum().sum()
 print(f"  - В итоговом датасете {final_na_count} пропусков (это ожидаемо и будет обработано CatBoost).")
-df.replace([np.inf, -np.inf], np.nan, inplace=True) # Заменяем inf на NaN на всякий случай
+df.replace([np.inf, -np.inf], np.nan, inplace=True)
 df = df.drop(columns=physical_features, errors='ignore')
 
-# --- Сохранение результата ---
 OUTPUT_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
 df.to_csv(OUTPUT_DATA_PATH, index=False)
 print(f"  - Обработанный датасет сохранен в: '{OUTPUT_DATA_PATH}'")

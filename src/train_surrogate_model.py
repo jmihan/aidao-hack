@@ -15,10 +15,6 @@ optuna.logging.set_verbosity(optuna.logging.INFO)
 SESSION_ID_COL = 'id'
 TARGET_COLUMN_SURROGATE = 'N_EC_rounds'
 
-# [Важно!] E_mu_Z - это ground truth, который недоступен на момент предсказания.
-# Но для обучения суррогатной модели, которая учит "физику", его можно использовать.
-# Мы будем подавать в нее E_mu_Z_pred от первой модели на этапе инференса.
-# delta_err_est также удаляем, т.к. он напрямую содержит E_mu_Z.
 COLS_TO_DROP_FROM_FEATURES = [
     TARGET_COLUMN_SURROGATE,
     'delta_err_est',
@@ -29,7 +25,7 @@ VALIDATION_SIZE = 0.2
 RANDOM_STATE = 42
 
 def load_and_prepare_data(input_path: Path):
-    """Загружает данные и выполняет разделение по сессиям (id)."""
+    """Загружает данные и выполняет разделение по сессиям (id)"""
 
     print("1. Загрузка и подготовка данных для суррогатной модели...")
     try:
@@ -39,7 +35,6 @@ def load_and_prepare_data(input_path: Path):
         return None, None, None, None
     print(f"  - Данные успешно загружены. Форма: {df.shape}")
     
-    # [Ключевое отличие] Применяем логарифмическое преобразование к таргету
     df[TARGET_COLUMN_SURROGATE] = np.log1p(df[TARGET_COLUMN_SURROGATE])
     print(f"  - Целевая переменная '{TARGET_COLUMN_SURROGATE}' логарифмирована.")
 
@@ -62,7 +57,7 @@ def load_and_prepare_data(input_path: Path):
     return X_train, y_train, X_val, y_val
 
 def objective(trial, X_train, y_train, X_val, y_val):
-    """Целевая функция для Optuna."""
+    """Целевая функция для Optuna"""
 
     params = {
         'iterations': 1500,
@@ -88,7 +83,7 @@ def objective(trial, X_train, y_train, X_val, y_val):
     return rmse
 
 def find_best_params(X_train, y_train, X_val, y_val, n_trials=10):
-    """Запускает исследование Optuna для поиска лучших параметров."""
+    """Запускает исследование Optuna для поиска лучших параметров"""
 
     print(f"\n3. Запуск Optuna для поиска лучших гиперпараметров ({n_trials} попыток)...")
     study = optuna.create_study(direction='minimize')
@@ -103,7 +98,7 @@ def find_best_params(X_train, y_train, X_val, y_val, n_trials=10):
     return study.best_params
 
 def train_final_model(X_train, y_train, X_val, y_val, best_params):
-    """Обучает модель CatBoostRegressor на лучших параметрах."""
+    """Обучает модель CatBoostRegressor на лучших параметрах"""
 
     print("\n4. Обучение суррогатной модели на лучших параметрах...")
     
@@ -125,14 +120,13 @@ def train_final_model(X_train, y_train, X_val, y_val, best_params):
     return model
 
 def evaluate_and_save_artifacts(model, X_val, y_val, output_dir: Path):
-    """Оценивает регрессионную модель и сохраняет артефакты."""
+    """Оценивает регрессионную модель и сохраняет артефакты"""
 
     print("\n5. Оценка суррогатной модели и сохранение артефактов...")
     output_dir.mkdir(parents=True, exist_ok=True)
     
     y_pred_log = model.predict(X_val)
     
-    # [Важно!] Возвращаемся к исходной шкале для оценки
     y_val_orig = np.expm1(y_val)
     y_pred_orig = np.expm1(y_pred_log)
     
@@ -152,15 +146,12 @@ def evaluate_and_save_artifacts(model, X_val, y_val, output_dir: Path):
     print(f"  - Отчет по метрикам сохранен в: {report_path}")
     print(metrics_report)
 
-    # Визуализация на оригинальной шкале
     plt.figure(figsize=(10, 10))
-    # Уменьшаем размер точек для лучшей читаемости
     plt.scatter(y_val_orig, y_pred_orig, alpha=0.2, s=5)
     plt.plot([y_val_orig.min(), y_val_orig.max()], [y_val_orig.min(), y_val_orig.max()], '--r', linewidth=2)
     plt.title('Предсказания vs. Реальные значения для N_EC_rounds')
     plt.xlabel('Реальные значения')
     plt.ylabel('Предсказанные значения')
-    # Логарифмическая шкала может быть полезна из-за выбросов
     plt.xscale('log')
     plt.yscale('log')
     scatter_path = output_dir / 'SURROGATE_predicted_vs_actual_optuna.png'
@@ -182,7 +173,7 @@ def evaluate_and_save_artifacts(model, X_val, y_val, output_dir: Path):
     print(f"  - Обученная суррогатная модель сохранена в: {model_path}")
 
 def main():
-    """Главная функция для запуска всего пайплайна обучения суррогатной модели."""
+    """Главная функция для запуска всего пайплайна обучения суррогатной модели"""
 
     parser = argparse.ArgumentParser(description="Скрипт для обучения суррогатной модели")
     
