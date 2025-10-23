@@ -2,7 +2,6 @@ name: PatchTST_Custom
 arch:
   _target_: src.model.patchtst.model.Model
   configs:
-    # --- Параметры данных ---
     enc_in: 45
     seq_len: 160
     pred_len: 8
@@ -22,7 +21,8 @@ arch:
     decomposition: false
     kernel_size: 25
     padding_patch: null
-
+    channel_mixing: true
+    
 target_channel_idx: 0
 
 loss:
@@ -34,7 +34,7 @@ optimizer:
   weight_decay: ${hparams.weight_decay}
 
 lr_scheduler:
-  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-  mode: min
-  factor: 0.2
-  patience: 3
+  _target_: transformers.get_cosine_schedule_with_warmup
+  # mode: min
+  # factor: 0.2
+  # patience: 3

@@ -56,8 +56,14 @@ def predict(model_dir: str):
     log.info(f"Директория с моделью: {model_dir}")
     log.info("="*50)
 
+    X = [[1, 1], [1, 2], [1, 3]]
+    y = [1, 2, 3]
+    X_t = torch.as_tensor(X, dtype=torch.float)
+    y_t = torch.as_tensor(y, dtype=torch.float).reshape(-1,1)
+    
+    
     # --- 1. Загрузка артефактов ---
-    log.info("--- Шаг 1/6: Загрузка артефактов (модель, скейлер, конфиг) ---")
+    log.info("--- Шаг 1/5: Загрузка артефактов (модель, скейлер, конфиг) ---")
     artifacts_path = os.path.join(model_dir, "artifacts.pkl")
     model_path = os.path.join(model_dir, "checkpoints", "model_best.pth")
 
@@ -78,21 +84,23 @@ def predict(model_dir: str):
     # --- 2. Инициализация модели и загрузка весов ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_configs = Namespace(**cfg.model.arch.configs)
+    print(model_configs)
     model = Model(configs=model_configs)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
     model.to(device)
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     model.eval()
     log.info(f"Модель успешно загружена на {device}.")
 
     # --- 3. Подготовка тестовых данных ---
-    log.info("--- Шаг 2/6: Подготовка тестовых данных ---")
+    log.info("--- Шаг 2/5: Подготовка тестовых данных ---")
     csv_path = os.path.join(cfg.data.root_path, cfg.data.data_path)
     df_raw = pd.read_csv(csv_path, header=None)
     df_raw.columns = [
         "block_id", "frame_idx", "E_mu_Z", "E_mu_phys_est", "E_mu_X", "E_nu1_X", "E_nu2_X", "E_nu1_Z", "E_nu2_Z", "N_mu_X", "M_mu_XX", "M_mu_XZ", "M_mu_X", "N_mu_Z", "M_mu_ZZ", "M_mu_Z", "N_nu1_X", "M_nu1_XX", "M_nu1_XZ", "M_nu1_X", "N_nu1_Z", "M_nu1_ZZ", "M_nu1_Z", "N_nu2_X", "M_nu2_XX", "M_nu2_XZ", "M_nu2_X", "N_nu2_Z", "M_nu2_ZZ", "M_nu2_Z", "nTot", "bayesImVoltage", "opticalPower", "polarizerVoltages[0]", "polarizerVoltages[1]", "polarizerVoltages[2]", "polarizerVoltages[3]", "temp_1", "biasVoltage_1", "temp_2", "biasVoltage_2", "synErr", "N_EC_rounds", "maintenance_flag", "estimator_name", "f_EC", "E_mu_Z_est", "R", "s", "p",
     ]
-    df_raw = df_raw.rename(columns={"block_id": "id"})
+    df_raw = df_raw.rename(columns={"block_id": "id", "frame_idx": "date"})
     
     # --- Генерация новых признаков ---
     df_raw = generate_features(df_raw)
@@ -115,7 +123,7 @@ def predict(model_dir: str):
     log.info(f"Подготовлено {len(test_inputs_scaled)} сэмплов для предсказания.")
 
     # --- 4. Получение предсказаний ---
-    log.info("--- Шаг 3/6: Генерация предсказаний моделью ---")
+    log.info("--- Шаг 3/5: Генерация предсказаний моделью ---")
     all_predictions = []
     with torch.no_grad():
         for i in range(len(test_inputs_scaled)):
@@ -124,31 +132,49 @@ def predict(model_dir: str):
             all_predictions.append(output.cpu().numpy())
 
     predictions_scaled = np.concatenate(all_predictions, axis=0)
-    target_predictions_scaled = predictions_scaled[:, :, target_channel_idx].flatten()
+    #target_predictions_scaled = predictions_scaled[:, :, target_channel_idx].flatten()
 
     # --- 5. Обратное масштабирование и агрегация ---
-    log.info("--- Шаг 4/6: Обратное масштабирование и агрегация ---")
-    dummy_array = np.zeros((len(target_predictions_scaled), len(feature_cols)))
-    dummy_array[:, target_channel_idx] = target_predictions_scaled
-    
-    inversed_full = scaler.inverse_transform(dummy_array)
-    final_predictions = inversed_full[:, target_channel_idx]
-    
-    TOTAL = 2000
-    if len(final_predictions) < TOTAL:
-        log.warning(f"Сгенерировано {len(final_predictions)} предсказаний, что меньше {TOTAL}. Submission будет дополнен последним значением.")
-        final_predictions = np.pad(final_predictions, (0, TOTAL - len(final_predictions)), 'edge')
-    elif len(final_predictions) > TOTAL:
-        log.info(f"Сгенерировано {len(final_predictions)} предсказаний. Агрегируем до {TOTAL} точек.")
-        original_indices = np.linspace(0, len(final_predictions) - 1, len(final_predictions))
-        target_indices = np.linspace(0, len(final_predictions) - 1, TOTAL)
-        final_predictions = np.interp(target_indices, original_indices, final_predictions)
+    log.info("--- Шаг 4/5: Обратное масштабирование и агрегация ---")
 
-    target_df = pd.DataFrame({"value": final_predictions})
-    log.info(f"Итоговое количество предсказаний: {len(target_df)}")
+    pred_len = predictions_scaled.shape[1]
+    reshaped_preds = predictions_scaled.reshape(-1, predictions_scaled.shape[-1])
+    
+    inversed_full = scaler.inverse_transform(reshaped_preds)
+    
+    final_predictions_flat = inversed_full[:, target_channel_idx]
+    
+    predictions_by_id = {}
+    for i, group_id in enumerate(ids_order):
+        start_idx = i * pred_len
+        end_idx = start_idx + pred_len
+        predictions_by_id[group_id] = final_predictions_flat[start_idx:end_idx]
+
+    TOTAL = 2000
+    n_ids = len(ids_order)
+    base = TOTAL // n_ids
+    rem = TOTAL % n_ids
+    
+    aggregated_predictions = []
+    for idx, group_id in enumerate(ids_order):
+        k = base + (1 if idx < rem else 0)
+        if k == 0: continue
+
+        arr = predictions_by_id[group_id]
+
+        if len(arr) >= k:
+            selected_arr = arr[:k]
+        else:
+            padding = np.full(k - len(arr), arr[-1])
+            selected_arr = np.concatenate([arr, padding])
+
+        aggregated_predictions.extend(selected_arr.tolist())
+
+    assert len(aggregated_predictions) == 2000, f"Получилось {len(aggregated_predictions)} предсказаний вместо 2000"
+    target_df = pd.DataFrame({"value": aggregated_predictions})
 
     # --- 6. Генерация submission.csv ---
-    log.info("--- Шаг 5/6: Применение финальной логики и создание submission.csv ---")
+    log.info("--- Шаг 5/5: Применение финальной логики и создание submission.csv ---")
     alpha = 0.33
     f_ec = 1.15
     R_range = [round(0.50 + 0.05 * x, 2) for x in range(9)]

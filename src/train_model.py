@@ -31,8 +31,18 @@ def train(cfg: DictConfig) -> None:
     if train_loader is None:
         log.error("Не удалось создать загрузчики данных. Прерывание.")
         return
-        
+       
     # --- 2. Динамическое обновление конфига ---
+    num_training_steps = len(train_loader) * cfg.hparams.epochs
+    num_warmup_steps = int(num_training_steps * 0.05) 
+    
+    log.info(f"Всего шагов обучения: {num_training_steps}, шагов прогрева: {num_warmup_steps}")
+    torch.optim.SGD()
+    OmegaConf.set_struct(cfg, False)
+    cfg.model.lr_scheduler.num_training_steps = num_training_steps
+    cfg.model.lr_scheduler.num_warmup_steps = num_warmup_steps
+    OmegaConf.set_struct(cfg, True)
+
     n_features = len(feature_cols)
     log.info(f"Динамическое обновление конфига: n_features = {n_features}, target_channel_idx = {target_channel_idx}")
     OmegaConf.set_struct(cfg, False)
@@ -55,6 +65,7 @@ def train(cfg: DictConfig) -> None:
 
     # --- 5. Инициализация тренера ---
     log.info("--- Шаг 4/5: Инициализация кастомного тренера ---")
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     metric_ftns = [mae, mse]
     
     trainer = Trainer(

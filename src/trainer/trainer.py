@@ -43,6 +43,10 @@ class Trainer(BaseTrainer):
             loss.backward()
             self.optimizer.step()
 
+            # Только для warmup планировщиков!!!
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
             self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
             self.train_metrics.update('loss', loss.item())
 
@@ -59,11 +63,11 @@ class Trainer(BaseTrainer):
             val_log = self._valid_epoch(epoch)
             log.update(**val_log)
         
-        if self.lr_scheduler is not None:
-            if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.lr_scheduler.step(val_log['loss/valid'])
-            else:
-                self.lr_scheduler.step()
+        # if self.lr_scheduler is not None:
+        #     if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+        #         self.lr_scheduler.step(val_log['loss/valid'])
+        #     else:
+        #         self.lr_scheduler.step()
 
         return log
 

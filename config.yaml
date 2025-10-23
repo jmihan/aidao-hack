@@ -1,5 +1,5 @@
-n_gpu: 6
-output_dir: outputs/patchtst_custom/2025-10-07_17-13-38
+n_gpu: 20
+output_dir: outputs/patchtst_custom/2025-10-11_13-30-06
 data:
   name: aidao_time_series
   root_path: ./data/
@@ -27,7 +27,7 @@ model:
   arch:
     _target_: src.model.patchtst.model.Model
     configs:
-      enc_in: 45
+      enc_in: 81
       seq_len: 160
       pred_len: 8
       patch_len: 16
@@ -46,6 +46,7 @@ model:
       decomposition: false
       kernel_size: 25
       padding_patch: null
+      channel_mixing: true
   target_channel_idx: 0
   loss:
     _target_: torch.nn.MSELoss
@@ -54,12 +55,11 @@ model:
     lr: 0.001
     weight_decay: 0.001
   lr_scheduler:
-    _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-    mode: min
-    factor: 0.2
-    patience: 3
+    _target_: transformers.get_cosine_schedule_with_warmup
+    num_training_steps: 31450
+    num_warmup_steps: 1572
 hparams:
-  epochs: 50
+  epochs: 25
   batch_size: 256
   learning_rate: 0.001
   weight_decay: 0.001

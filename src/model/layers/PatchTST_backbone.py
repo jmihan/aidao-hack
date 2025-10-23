@@ -20,7 +20,7 @@ class PatchTST_backbone(nn.Module):
                  padding_var:Optional[int]=None, attn_mask:Optional[Tensor]=None, res_attention:bool=True, pre_norm:bool=False, store_attn:bool=False,
                  pe:str='zeros', learn_pe:bool=True, fc_dropout:float=0., head_dropout = 0, padding_patch = None,
                  pretrain_head:bool=False, head_type = 'flatten', individual = False, revin = True, affine = True, subtract_last = False,
-                 verbose:bool=False, **kwargs):
+                 verbose:bool=False, channel_mixing:bool=False, **kwargs):
         
         super().__init__()
         
@@ -44,6 +44,10 @@ class PatchTST_backbone(nn.Module):
                                 attn_mask=attn_mask, res_attention=res_attention, pre_norm=pre_norm, store_attn=store_attn,
                                 pe=pe, learn_pe=learn_pe, verbose=verbose, **kwargs)
 
+        self.channel_mixing = channel_mixing
+        if self.channel_mixing:
+            self.mixer = ChannelMixingLayer(c_in)
+            
         # Head
         self.head_nf = d_model * patch_num
         self.n_vars = c_in
@@ -72,6 +76,10 @@ class PatchTST_backbone(nn.Module):
         
         # model
         z = self.backbone(z)                                                                # z: [bs x nvars x d_model x patch_num]
+
+        if self.channel_mixing:
+            z = self.mixer(z)
+
         z = self.head(z)                                                                    # z: [bs x nvars x target_window] 
         
         # denorm
@@ -106,7 +114,6 @@ class Flatten_Head(nn.Module):
             self.flatten = nn.Flatten(start_dim=-2)
             self.linear = nn.Linear(nf, target_window)
             self.dropout = nn.Dropout(head_dropout)
-            
     def forward(self, x):                                 # x: [bs x nvars x d_model x patch_num]
         if self.individual:
             x_out = []
@@ -115,7 +122,7 @@ class Flatten_Head(nn.Module):
                 z = self.linears[i](z)                    # z: [bs x target_window]
                 z = self.dropouts[i](z)
                 x_out.append(z)
-            x = torch.stack(x_out, dim=1)                 # x: [bs x nvars x target_window]
+            x = torch.stack(x_out, dim=1)                # x: [bs x nvars x target_window]
         else:
             x = self.flatten(x)
             x = self.linear(x)
@@ -377,3 +384,25 @@ class _ScaledDotProductAttention(nn.Module):
         if self.res_attention: return output, attn_weights, attn_scores
         else: return output, attn_weights
 
+
+class ChannelMixingLayer(nn.Module):
+    def __init__(self, n_vars: int):
+        super().__init__()
+        self.mixer = nn.Sequential(
+            nn.Linear(n_vars, n_vars),
+            nn.ReLU(),
+            nn.Linear(n_vars, n_vars),
+            nn.Dropout(0.3),
+            nn.ReLU(),
+            nn.Linear(n_vars, n_vars),
+        )
+        self.norm = nn.LayerNorm(n_vars)
+
+    def forward(self, x: Tensor):
+        x_permuted = x.permute(0, 3, 2, 1)
+
+        mixed = self.mixer(x_permuted)
+
+        mixed_permuted = mixed.permute(0, 3, 2, 1) # [bs x nvars x d_model x patch_num]
+        
+        return self.norm((x + mixed_permuted).transpose(1, 3)).transpose(1, 3)

@@ -109,25 +109,62 @@ def generate_features(df: pd.DataFrame) -> pd.DataFrame:
     
     df.sort_values(['id', 'date'], inplace=True)
 
-    # 1. Лаговые признаки
-    for lag in [1, 5]:
+    # --- БЛОК 1: Признаки для целевой переменной (оставляем как было) ---
+    lags_target = [1, 3, 5, 10]
+    for lag in lags_target:
         df[f'E_mu_Z_lag_{lag}'] = df.groupby('id')['E_mu_Z'].shift(lag)
 
-    # 2. Скользящие статистики (окно 10)
-    grouped = df.groupby('id')['E_mu_Z']
-    df['E_mu_Z_roll_mean_10'] = grouped.transform(lambda x: x.shift(1).rolling(10).mean())
-    df['E_mu_Z_roll_std_10'] = grouped.transform(lambda x: x.shift(1).rolling(10).std())
+    windows_target = [5, 10, 20]
+    for window in windows_target:
+        grouped = df.groupby('id')['E_mu_Z']
+        df[f'E_mu_Z_roll_mean_{window}'] = grouped.transform(lambda x: x.shift(1).rolling(window).mean())
+        df[f'E_mu_Z_roll_std_{window}'] = grouped.transform(lambda x: x.shift(1).rolling(window).std())
 
-    # 3. Глобальные статистики по 'id'
-    block_stats = df.groupby('id')['E_mu_Z'].agg(['mean', 'std']).rename(columns={
-        'mean': 'E_mu_Z_block_mean',
-        'std': 'E_mu_Z_block_std'
-    }).reset_index()
-    df = df.merge(block_stats, on='id', how='left')
+    # --- БЛОК 2: НОВЫЙ - Признаки для ключевых физических предикторов ---
+    # [Аргументация]: Выбираем признаки, которые по физическому смыслу или по результатам
+    # анализа CatBoost могут сильно влиять на QBER.
+    key_predictors = [
+        'temp_1', 
+        'biasVoltage_1',
+        'temp_2',
+        'biasVoltage_2',
+        'opticalPower',
+        'synErr'
+    ]
+
+    # --- 2.1: Скользящие статистики для ключевых предикторов ---
+    # [Аргументация]: Даем модели информацию о недавнем тренде (mean) и
+    # волатильности (std) этих важных параметров.
+    windows_predictors = [10, 20] 
+    for col in key_predictors:
+        for window in windows_predictors:
+            grouped = df.groupby('id')[col]
+            df[f'{col}_roll_mean_{window}'] = grouped.transform(lambda x: x.shift(1).rolling(window).mean())
+            df[f'{col}_roll_std_{window}'] = grouped.transform(lambda x: x.shift(1).rolling(window).std())
+
+    # --- 2.2: Дельта-признаки (скорость изменения) для ключевых предикторов ---
+    # [Аргументация]: `diff(1)` - это самый сильный сигнал о том, что в системе
+    # что-то меняется ПРЯМО СЕЙЧАС. Очень полезно для предсказания аномалий.
+    for col in key_predictors:
+        df[f'{col}_diff_1'] = df.groupby('id')[col].diff(1)
+
+
+    # --- БЛОК 3: НОВЫЙ - Признаки-взаимодействия ---
+    # [Аргументация]: Создаем простые взаимодействия, которые могут отражать
+    # нелинейные зависимости, которые модель может не уловить сама.
+    df['temp_1_x_bias_1'] = df['temp_1'] * df['biasVoltage_1']
+    df['temp_2_x_bias_2'] = df['temp_2'] * df['biasVoltage_2']
     
-    # 4. Бинарный флаг для аномального напряжения
-    df['polarizerVoltages_3_is_zero'] = (df['polarizerVoltages[3]'] == 0).astype(int)
+    # Рассматриваем отношение M_mu_XX к N_mu_X как "частоту ошибок" на сигнальных состояниях
+    df['M_mu_XX_div_N_mu_X'] = df['M_mu_XX'] / (df['N_mu_X'] + 1e-6)
+
+
+    new_cols_count = (
+        len(lags_target) + len(windows_target)*2 +
+        len(key_predictors) * len(windows_predictors) * 2 +
+        len(key_predictors) + 3 # interaction features
+    )
     
-    print(f"Добавлено {len(['E_mu_Z_lag_1', 'E_mu_Z_lag_5', 'E_mu_Z_roll_mean_10', 'E_mu_Z_roll_std_10', 'E_mu_Z_block_mean', 'E_mu_Z_block_std', 'polarizerVoltages_3_is_zero'])} новых признаков.")
+    print(f"Примерно {new_cols_count} новых признаков было сгенерировано.")
     
     return df

@@ -1,0 +1,25 @@
+data:
+  root_path: ./
+  data_path: data/frames_errors.csv
+  val_size: 0.2
+
+model:
+  target_column: 'R'
+  params:
+    iterations: 3000
+    learning_rate: 0.05
+    depth: 9
+    l2_leaf_reg: 10
+    min_data_in_leaf: 10
+    border_count: 128
+    random_strength: 0.3
+    loss_function: 'MultiClass'
+    #auto_class_weights: "Balanced"
+    eval_metric: 'TotalF1:average=Weighted'
+    custom_metric: ['Accuracy', 'TotalF1:average=Macro']
+    random_seed: 123
+    task_type: 'GPU'
+
+hparams:
+  early_stopping_patience: 150
+  optuna_trials: 50

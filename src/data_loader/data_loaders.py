@@ -85,8 +85,8 @@ def get_data_loaders(config, batch_size):
     train_dataset = Dataset_Custom(train_df, features_list=feature_cols, size=[config.context_length, config.label_len, config.prediction_length], features='M')
     valid_dataset = Dataset_Custom(valid_df, features_list=feature_cols, size=[config.context_length, config.label_len, config.prediction_length], features='M')
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 20))
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=config.get('n_cpu', 20), pin_memory=True, persistent_workers=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=config.get('n_cpu', 20), pin_memory=True, persistent_workers=True)
     log.info("Загрузчики данных (DataLoader) успешно созданы.")
 
     return train_loader, valid_loader, scaler, feature_cols, target_channel_idx
